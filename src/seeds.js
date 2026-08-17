@@ -52,6 +52,7 @@ function member(index) {
     id,
     demo: true,
     displayName: `示意會員 ${String(n).padStart(2, '0')}`,
+    legalName: `DEMO 測試姓名 ${String(n).padStart(2, '0')}`,
     phone: `09${String(10000000 + n).padStart(8, '0')}`,
     email: `demo${n}@example.invalid`,
     lineUserId: `demo-line-user-${String(n).padStart(3, '0')}`,
@@ -96,6 +97,9 @@ function subscription(index, members, projects) {
     receivedAmountTwd: received,
     allocatedAmountTwd: allocated,
     refundedAmountTwd: refunded,
+    riskAcknowledged: true,
+    riskAcknowledgedAt: isoOffset(20 - (index % 20)),
+    riskDisclosureVersion: 'demo-draft-0.1',
     partnerApproval: approved > 0 ? {
       approver: 'DEMO 持牌合作機構',
       approvedAt: isoOffset(10 - (index % 10)),

@@ -16,7 +16,7 @@ Sheets 直接公開給瀏覽器。
 
 | Script Property | 用途 |
 |---|---|
-| `SPREADSHEET_ID` | `setupWorkbook()` 自動設定；兩個 Script 專案共用同一份 Sheet 時需複製 |
+| `SPREADSHEET_ID` | `setupWorkbook()` 自動設定；gateway／admin 兩個 deployment 共享同一份設定 |
 | `GATEWAY_SHARED_SECRET` | Worker 與 gateway 共用，至少 32 個隨機字元；對應 Worker `APPS_SCRIPT_SHARED_SECRET` |
 | `ADMIN_EMAILS` | 可管理的 Google email，以逗號分隔；至少兩名管理者 |
 | `GOOGLE_ADMIN_CLIENT_ID` | 前端 Google Identity Services 的 OAuth client ID |
@@ -25,28 +25,48 @@ Sheets 直接公開給瀏覽器。
 | `MEMBER_APP_BASE_URL` | 正式會員站 URL，通知只帶狀態文字與此深連結 |
 
 管理帳號的 Google Workspace／Google Account 仍須強制啟用 Google 兩步驟驗證；
-Worker 的管理登入另外驗證 `ADMIN_TOTP_SECRETS_JSON` TOTP，不以 LINE 身分升級成 admin。
+Worker 與 HtmlService 管理登入都另外驗證 `ADMIN_TOTP_SECRETS_JSON` TOTP，不以 LINE 身分
+升級成 admin。email key 請使用小寫，且每個 `ADMIN_EMAILS` 帳號都必須有獨立 Base32 secret。
+`ADMIN_AUTH_STATES_JSON` 與 User Property `ADMIN_HTML_SESSION_JSON` 是程式運行時資料，不要手動建立或修改。
 
-## 2. 兩個 Web App 部署
+完成屬性設定後，手動執行 `validateDeploymentConfiguration()`。它會 fail closed 檢查至少兩名
+不重複管理員、每人 TOTP、gateway secret 與 spreadsheet 設定，回傳值不含任何 secret。
+
+## 2. 同一 Script project 的兩個 Web App deployment
 
 Google Apps Script 的執行身分是 deployment 屬性：匿名 Worker gateway 需要
 `USER_DEPLOYING`，而 `Session.getActiveUser().getEmail()` 的後台 allowlist 需要
-`USER_ACCESSING`。因此正式環境使用兩個獨立 Apps Script 專案（共用同一份 Sheet、
-部署相同 `.gs`/HTML）：
+`USER_ACCESSING`。正式環境必須使用**同一個 Apps Script project、兩個固定版本 deployment**；
+不要複製成兩個 Script project。如此 nonce、Sheets 寫入、TOTP replay counter 與 audit 才會共享
+同一組 Script Properties 與 `LockService.getScriptLock()`。
 
-- **Gateway project**：使用 `appsscript.json`，`ANYONE_ANONYMOUS` +
-  `USER_DEPLOYING`；URL 只交給 Worker 的 `APPS_SCRIPT_URL`。公開知道 URL 仍無法繞過
-  HMAC、5 分鐘時窗與 nonce replay gate。
-- **Admin project**：把 `appsscript.admin.json` 的內容作為該專案的
-  `appsscript.json`，`ANYONE` + `USER_ACCESSING`；只把 URL 給管理者。
-  `doGet` 與每一次 `adminRpc` 都重新檢查 `ADMIN_EMAILS`，未授權或無法取得 email 時拒絕。
+建議的版本流程：
+
+1. 以 `appsscript.json` 建立 gateway 版本，建立 Web App deployment A：
+   `ANYONE_ANONYMOUS` + `USER_DEPLOYING`。A 的 URL 只交給 Worker `APPS_SCRIPT_URL`；公開知道
+   URL 仍無法繞過 HMAC、5 分鐘時窗與 nonce replay gate。
+2. 在**相同 Script ID** 暫時將 `appsscript.admin.json` 內容作為 manifest，建立另一個 immutable
+   版本，再建立 Web App deployment B：`ANYONE` + `USER_ACCESSING`。B 的 URL 只給管理者。
+3. 後續每次發版都各建立一個 gateway version 與 admin version，再分別更新 A、B 所指版本；
+   不要讓正式 deployment 指向 Head，也不要刪除仍被 deployment 使用的版本。
+
+`doGet` 先檢查目前 Google email 與至少兩人的 `ADMIN_EMAILS` preflight。通過後仍只顯示 TOTP
+gate；驗證成功才核發 8 小時 session。原始 token 只存在瀏覽器 `sessionStorage`（關閉分頁即清除），
+User Properties 僅保存 token SHA-256 雜湊與到期時間。每次 `adminRpc` 都重新驗 Google allowlist、
+token 雜湊與期限；同一 TOTP counter 不可重播，10 分鐘內連錯 5 次會鎖 15 分鐘。
 
 這兩種執行模式與 access enum 是 Apps Script 官方 manifest 行為：
 https://developers.google.com/apps-script/manifest/web-app-api-executable
 
-為 `processNotificationQueue` 安裝每 5 分鐘執行的 time-driven trigger。Routine 事件會
+先執行 `productionPreflight()`，再執行一次 `installNotificationQueueTrigger()`，以冪等方式
+為 `processNotificationQueue` 安裝唯一一個每 5 分鐘執行的 time-driven trigger。Routine 事件會
 自動排入 `queued`；拒絕、退款與 bulk 先停在 `pending_manual`。LINE 失敗以 5/10 分鐘
-退避重試，第三次失敗成為 `failed` 待辦。訊息模板從不包含金額。
+再加 15 分鐘退避，亦即首次投遞後最多重試三次；第四次失敗成為 `failed` 待辦。訊息模板
+從不包含金額。
+
+所有 Sheets mutation 都在同一 ScriptLock 內執行，並在 release lock 前呼叫
+`SpreadsheetApp.flush()`。若已存在舊版 Sheet，新增欄位不會被靜默改寫；`setupWorkbook()` 會以
+`schema_mismatch` 拒絕。先備份，再依 `ZF_SCHEMA` 遷移表頭或建立新的 workbook。
 
 ## 3. Worker → Apps Script 固定信封
 
@@ -106,25 +126,25 @@ Apps Script ContentService 無法可靠設定 HTTP status，因此 Worker 必須
 
 Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 body 自稱的角色或會員 ID。
 
-| Dotted operation（Worker 正式契約） | 主要 payload／response |
+| Operation（dotted alias；camelCase 同樣支援） | 主要 payload／response |
 |---|---|
 | `auth.line.resolve` | `{lineUserId,displayName,pictureUrl,friendshipStatus}` → `{memberId}`；新會員為 pending |
 | `member.self` / `getMember` | Worker session context → 已遮蔽 LINE userId 的本人會員資料；供會員儀表板顯示資格與方案 |
 | `auth.admin.authenticate` | `{googleCredential,twoFactorCode}` → `{adminId,displayName}`；驗 Google token audience/email/expiry、allowlist、TOTP |
 | `projects.list` | proxy payload → `{projects}`；未逐案授權時只有 public view |
 | `projects.get` | `params.projectId` → `{project}`；同樣做逐案欄位遮罩 |
-| `activation.create` | `body:{fullName,phone,sourceCode,sourceName,lineFriendConfirmed,privacyConsent}` → `{activation}`；memberId 與 LINE userId 一律取可信 session context |
+| `activation.create` | `body:{fullName,phone,sourceCode,sourceName,lineFriendConfirmed,privacyConsent}` → `{activation}`；memberId 與 LINE userId 一律取可信 session context，並以伺服器保存的 `member.lineFriendshipState=friend` 為準，checkbox 不能當好友證據 |
 | `bookings.list` | member/admin → `{bookings}`，會員只見自己的資料 |
 | `bookings.create` | `body:{displayName,phone,email,advisorType,topic,preferredTime,note}` → `{booking}` |
 | `subscriptions.list` | member/admin → `{subscriptions}`，會員只見自己的資料 |
-| `subscriptions.create` | `body:{projectId,requestedAmountTwd}` + `idempotencyKey` → `{subscription,replayed}`；檢查 active、qualification approved、逐案權限與 minimum/increment |
+| `subscriptions.create` | `body:{projectId,requestedAmountTwd,riskAcknowledged:true}` + `idempotencyKey` → `{subscription,replayed}`；檢查 active、qualification approved、逐案權限與 minimum/increment，並保存風險版本與確認時間 |
 | `deck.authorize` | `{projectId,actor}` → `{allowed,objectKey,filename,contentType,expiresAt}`；R2 key 來自 `project.deck.objectKey`，缺省為 `decks/{projectId}/{deckId}.pdf` |
 | `deck.download.audit` | `{projectId,objectKey,actor,downloadedAt}` → `{accepted:true}` |
 | `line.webhook.ingest` | `{events:[minimal LINE events]}` → `{accepted,results}`；只存 event metadata，不保存訊息全文 |
 | `admin.dashboard`, `admin.overview` | → KPI、五種金額總計、近期認購與待辦 |
 | `admin.members.list`, `admin.projects.list`, `admin.subscriptions.list`, `admin.notifications.list`, `admin.audits.list` | → `{resource,records,total}` |
 | `admin.actions.list` | → `{actions:{members,subscriptions,notifications}}` |
-| `admin.members.update` | `params.memberId`, `body` patch + reason；資格 approved 必須有 approver/date/reference |
+| `admin.members.update` | `params.memberId`, `body` patch + reason；資格 approved 必須有 approver/approvedAt/reference/future expiresAt，並可更新 `projectAccess[]` |
 | `admin.projects.update` | `params.projectId`, `body` patch + reason；逐案 allowlist 寫入 Projects |
 | `admin.subscriptions.update` | `params.subscriptionId`, `body` patch + reason；五金額 invariant、狀態 transition、partner evidence |
 | `admin.notifications.create` | `body:{memberIds,announcementId}`；建立 bulk `pending_manual` |
@@ -143,12 +163,17 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 - `Subscriptions` 有獨立 `membershipState`、`qualificationState`、
   `subscriptionState`、`fundingState`、`allocationState`，並有 requested／approved／
   received／allocated／refunded 五個整數 TWD ledger。
+- 每筆新認購必須保存 `riskAcknowledged=true`、`riskAcknowledgedAt` 與
+  `riskDisclosureVersion`；前端勾選但後端未留證不算完成。
 - approved 不得高於 requested、received 不得高於 approved、refunded 不得高於
   received、allocated 不得高於 received-refunded。
-- 認購或合格投資人核准均必須保存持牌合作機構 approver、approvedAt、reference。
+- 認購核准必須保存持牌合作機構 approver、approvedAt、reference。合格投資人核准另需未過期的
+  expiresAt；approvedAt 必須可解析、不得明顯晚於伺服器時間，且 expiresAt 必須晚於 approvedAt。
 - protected project 只有 active + qualification approved + member projectAccess 或 project
-  memberAllowlist 才返回；visitor/member 無權時不回傳 company、amount、reports、deck。
-- `Audits` 只 append；包含 actor、before/after、reason、requestId、時間。不要手動編輯或刪除。
+  memberAllowlist 且資格未過期才返回；visitor/member 無權時不回傳 company、amount、reports、deck。
+- 啟用申請保存 sourceCode、sourceName、consentedAt 與當時伺服器已驗證的 LINE friendship evidence；
+  後台會一併顯示，讓雪芬姐確認來源與同意證據。
+- `Audits` 在應用層只 append；包含 actor、before/after、reason、requestId、時間。不要手動編輯或刪除。Google Sheets 本身不是 WORM storage；若正式法規要求不可竄改保存，需另接有 retention lock 的 audit store。
 
 ## 6. 驗證
 
@@ -156,6 +181,8 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 node apps-script/tests/run-tests.cjs
 ```
 
-測試涵蓋獨立 HMAC canonical/signature vector、過期與篡改、五金額 invariant、狀態與
-partner evidence、角色/逐案欄位遮罩、通知自動/人工政策及無金額訊息。真實 Google／LINE／
-Sheets/R2 驗收仍需正式 credentials 與測試帳號，不能用此純函式測試代替。
+測試涵蓋獨立 HMAC canonical/signature vector、過期與篡改、lock 內 flush、五金額 invariant、
+推導狀態不可倒退、partner/qualification evidence 時序、缺 memberId fail closed、過期資格、
+伺服器 LINE 好友證據、TOTP replay／lockout／session 雜湊與到期、兩管理員 preflight、逐案欄位
+遮罩、通知自動/人工政策及無金額訊息。真實 Google／LINE／Sheets/R2 驗收仍需正式 credentials
+與測試帳號，不能用此純函式測試代替。

@@ -1,5 +1,6 @@
 import { callAppsScript } from './apps-script';
 import { randomToken, sha256Hex } from './crypto';
+import { appsScriptErrorStatus } from './errors';
 import {
   clearSessionCookie,
   OAUTH_STATE_TTL_SECONDS,
@@ -150,7 +151,6 @@ export async function finishLineLogin(request: Request, env: GatewayEnv): Promis
       friendshipStatus = 'unknown';
     }
 
-    let resolved: ResolvedIdentity = {};
     const resolution = await callAppsScript<ResolvedIdentity>(env, 'upsertLineMember', {
       context: { role: 'service', actorId: 'cloudflare-line-login', requestId: crypto.randomUUID() },
       member: {
@@ -160,7 +160,29 @@ export async function finishLineLogin(request: Request, env: GatewayEnv): Promis
         lineFriendshipState: friendshipStatus,
       },
     });
-    if (resolution.ok) resolved = resolution.data;
+    if (!resolution.ok) {
+      console.error(JSON.stringify({
+        level: 'error',
+        event: 'line_member_resolution_failed',
+        code: resolution.error.code,
+        lineUserId: identity.sub,
+      }));
+      return authError(
+        resolution.error.code,
+        'LINE member account could not be linked',
+        appsScriptErrorStatus(resolution.error.code),
+      );
+    }
+    const memberIdValue = resolution.data.memberId || resolution.data.id;
+    const memberId = typeof memberIdValue === 'string' ? memberIdValue.trim() : '';
+    if (!memberId) {
+      console.error(JSON.stringify({
+        level: 'error',
+        event: 'line_member_resolution_invalid',
+        lineUserId: identity.sub,
+      }));
+      return authError('member_resolution_invalid', 'LINE member account could not be linked', 502);
+    }
 
     const rawSession = randomToken(48);
     const sessionId = await sha256Hex(rawSession);
@@ -173,7 +195,7 @@ export async function finishLineLogin(request: Request, env: GatewayEnv): Promis
     ).bind(
       sessionId,
       identity.sub,
-      resolved.memberId || resolved.id || null,
+      memberId,
       identity.name || 'LINE 會員',
       identity.picture || null,
       'member',
@@ -219,12 +241,15 @@ export async function authenticateAdmin(request: Request, env: GatewayEnv): Prom
     googleCredential: body.credential,
     twoFactorCode: body.twoFactorCode,
   });
-  if (!verified.ok || !verified.data.adminId || !verified.data.displayName) {
+  if (!verified.ok) {
     return authError(
-      verified.ok ? 'admin_identity_invalid' : verified.error.code,
-      verified.ok ? 'Admin identity response is invalid' : verified.error.message,
-      403,
+      verified.error.code,
+      verified.error.message,
+      appsScriptErrorStatus(verified.error.code),
     );
+  }
+  if (!verified.data.adminId || !verified.data.displayName) {
+    return authError('admin_identity_invalid', 'Admin identity response is invalid', 502);
   }
   const now = Math.floor(Date.now() / 1000);
   const rawSession = randomToken(48);
@@ -244,7 +269,15 @@ export async function authenticateAdmin(request: Request, env: GatewayEnv): Prom
     now,
     now + SESSION_TTL_SECONDS,
   ).run();
-  const response = Response.json({ ok: true, data: { authenticated: true, role: 'admin' } });
+  const response = Response.json({
+    ok: true,
+    data: {
+      authenticated: true,
+      role: 'admin',
+      redirectUrl: env.ADMIN_DASHBOARD_URL?.trim() || null,
+      adminDashboardUrl: env.ADMIN_DASHBOARD_URL?.trim() || null,
+    },
+  });
   response.headers.append('set-cookie', sessionCookie(rawSession, env));
   return response;
 }

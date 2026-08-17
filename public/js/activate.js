@@ -1,5 +1,5 @@
-import { api } from './api.js';
-import { escapeHtml, setButtonBusy, toast } from './common.js';
+import { api, appUrl } from './api.js';
+import { activationSourceFromUrl, escapeHtml, setButtonBusy, toast } from './common.js';
 
 const form = document.querySelector('#activation-form');
 const card = document.querySelector('#activation-card');
@@ -7,6 +7,25 @@ const lineStatus = document.querySelector('#line-status');
 const lineActions = document.querySelector('#line-actions');
 const lineLogin = document.querySelector('#line-login');
 const addFriend = document.querySelector('#add-friend');
+
+function prefillCommunitySource() {
+  const source = activationSourceFromUrl(window.location.search);
+  const sourceCode = document.querySelector('#activation-code');
+  const sourceName = document.querySelector('#activation-source');
+  if (source.sourceCode && !sourceCode.value) sourceCode.value = source.sourceCode;
+  if (source.sourceName && !sourceName.value) sourceName.value = source.sourceName;
+}
+
+function lineLoginUrlWithReturnTo(value) {
+  try {
+    const url = new URL(value, window.location.href);
+    url.searchParams.set('return_to', window.location.href);
+    url.searchParams.set('returnTo', `${window.location.pathname}${window.location.search}`);
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
 
 function markStep(name) {
   const steps = [...document.querySelectorAll('[data-step-label]')];
@@ -28,7 +47,7 @@ function showAuthenticated(member) {
 async function initialize() {
   try {
     const config = await api.detectConfig();
-    if (config?.lineLoginUrl) lineLogin.href = config.lineLoginUrl;
+    if (config?.lineLoginUrl) lineLogin.href = lineLoginUrlWithReturnTo(config.lineLoginUrl);
     if (config?.lineAddFriendUrl) addFriend.href = config.lineAddFriendUrl;
     else if (config?.lineOaBasicId || config?.lineOfficialAccountBasicId) addFriend.href = `https://line.me/R/ti/p/${encodeURIComponent(config.lineOaBasicId || config.lineOfficialAccountBasicId)}`;
     else addFriend.addEventListener('click', (event) => {
@@ -70,7 +89,10 @@ form.addEventListener('submit', async (event) => {
     const input = Object.fromEntries(new FormData(form));
     await api.activate({ ...input, lineFriendConfirmed: true, privacyConsent: true });
     markStep('review');
-    card.innerHTML = `<div class="success-panel"><span class="success-panel__mark" aria-hidden="true">✓</span><p class="eyebrow">Application received</p><h2>申請已送出</h2><p>雪芬姐將核對你的社群來源。確認完成後，LINE 只會通知「狀態已更新」，請回到會員中心查看內容。</p><a class="button" href="/member.html">查看會員中心</a></div><p class="micro" style="margin-top:18px;text-align:center">Demo 環境會立即保留這筆操作；正式審核仍須由管理後台確認。</p>`;
+    const environmentNote = api.isDemo()
+      ? 'Demo 環境會立即保留這筆操作；正式審核仍須由管理後台確認。'
+      : '申請已安全送交營運端；會員狀態仍須由雪芬姐人工確認。';
+    card.innerHTML = `<div class="success-panel"><span class="success-panel__mark" aria-hidden="true">✓</span><p class="eyebrow">Application received</p><h2>申請已送出</h2><p>雪芬姐將核對你的社群來源。確認完成後，LINE 只會通知「狀態已更新」，請回到會員中心查看內容。</p><a class="button" href="${escapeHtml(appUrl('/member.html'))}">查看會員中心</a></div><p class="micro" style="margin-top:18px;text-align:center">${escapeHtml(environmentNote)}</p>`;
   } catch (error) {
     toast(`申請未送出：${error.message}`, 'error');
   } finally {
@@ -78,4 +100,5 @@ form.addEventListener('submit', async (event) => {
   }
 });
 
+prefillCommunitySource();
 initialize();

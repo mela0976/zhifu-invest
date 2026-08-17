@@ -55,12 +55,18 @@ test('a qualified member also needs per-project access', () => {
   assert.ok(deniedProject);
   assert.equal(canAccessProtectedProject(member, deniedProject), false);
   assert.equal('protected' in publicProject(data.projects[0]), false);
+  assert.equal(canAccessProtectedProject({
+    ...member,
+    qualificationApproval: { ...member.qualificationApproval, expiresAt: '2020-01-01T00:00:00.000Z' },
+  }, data.projects[0]), false);
+  assert.equal(canAccessProtectedProject({ ...member, qualificationApproval: null }, data.projects[0]), false);
 });
 
 test('partner evidence is mandatory before an interest can be approved', () => {
   const now = new Date().toISOString();
   const submitted = createSubscriptionRecord({
-    id: 'sub-test', memberId: 'member-001', projectId: 'project-01', requestedAmountTwd: 500_000, now,
+    id: 'sub-test', memberId: 'member-001', projectId: 'project-01', requestedAmountTwd: 500_000,
+    riskAcknowledged: true, riskAcknowledgedAt: now, riskDisclosureVersion: 'test-v1', now,
   });
   const confirmed = updateSubscriptionRecord(submitted, { subscriptionState: 'operations_confirmed' }, now);
   const review = updateSubscriptionRecord(confirmed, { subscriptionState: 'partner_review' }, now);
@@ -73,4 +79,19 @@ test('partner evidence is mandatory before an interest can be approved', () => {
     partnerApproval: { approver: 'Partner', approvedAt: now, reference: 'REF-1' },
   }, now);
   assert.equal(approved.subscriptionState, 'approved');
+});
+
+test('derived funding and allocation states cannot reverse through amount edits', () => {
+  const now = new Date().toISOString();
+  const paid = {
+    id: 'sub-paid', memberId: 'member-001', projectId: 'project-01',
+    subscriptionState: 'approved', fundingState: 'paid', allocationState: 'final',
+    requestedAmountTwd: 500_000, approvedAmountTwd: 500_000, receivedAmountTwd: 500_000,
+    allocatedAmountTwd: 500_000, refundedAmountTwd: 0,
+    partnerApproval: { approver: 'Partner', approvedAt: now, reference: 'REF-PAID' },
+  };
+  assert.throws(
+    () => updateSubscriptionRecord(paid, { receivedAmountTwd: 0, allocatedAmountTwd: 0 }, now),
+    (error) => error instanceof DomainError && error.code === 'invalid_transition',
+  );
 });

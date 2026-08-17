@@ -16,6 +16,13 @@ import {
   shouldRejectStaticWrite,
 } from '../public/js/api.js';
 import {
+  activationSourceFromUrl,
+  normalizeExternalHttpsUrl,
+  qualificationExpiryIso,
+  resolveAdminDashboardRoute,
+} from '../public/js/common.js';
+import { approvedProjectReports, protectedProjectContent } from '../public/js/project-content.js';
+import {
   buildPages,
   normalizePublicApiBaseUrl,
   runtimeConfigSource,
@@ -47,6 +54,59 @@ test('runtime mode fails closed and Pages navigation keeps the repository base',
     resolveAppUrl('/member.html', { hostname: 'mela0976.github.io', pathname: '/zhifu-invest/admin.html' }),
     '/zhifu-invest/member.html',
   );
+});
+
+test('activation links normalize community source query parameters', () => {
+  assert.deepEqual(
+    activationSourceFromUrl('?sourceCode=SF-NORTH&sourceName=%E5%8C%97%E5%8D%80OpenChat'),
+    { sourceCode: 'SF-NORTH', sourceName: '北區OpenChat' },
+  );
+  assert.deepEqual(
+    activationSourceFromUrl('?sc=%20GROUP-7%00%20&openChat=%20%E9%9B%AA%E8%8A%AC%E5%A7%90%E7%A4%BE%E7%BE%A4%20'),
+    { sourceCode: 'GROUP-7', sourceName: '雪芬姐社群' },
+  );
+});
+
+test('formal admin routing redirects only to a credential-free HTTPS dashboard', () => {
+  const url = 'https://script.google.com/macros/s/example/exec';
+  assert.equal(normalizeExternalHttpsUrl(url), url);
+  assert.deepEqual(resolveAdminDashboardRoute({ adminDashboardUrl: url }, true), { mode: 'redirect', url });
+  assert.deepEqual(resolveAdminDashboardRoute({}, true), { mode: 'blocked', url: '' });
+  assert.deepEqual(resolveAdminDashboardRoute({ adminDashboardUrl: url }, false), { mode: 'local', url: '' });
+  assert.equal(normalizeExternalHttpsUrl('http://example.com/admin'), '');
+  assert.equal(normalizeExternalHttpsUrl('https://user:secret@example.com/admin'), '');
+});
+
+test('approved qualification requires a future expiry date', () => {
+  const now = Date.parse('2026-08-18T00:00:00+08:00');
+  assert.equal(qualificationExpiryIso('2026-08-17', now), '');
+  assert.equal(qualificationExpiryIso('', now), '');
+  assert.equal(qualificationExpiryIso('2026-08-19', now), '2026-08-19T15:59:59.000Z');
+});
+
+test('protected project content exposes approved AI and expert report metadata only', () => {
+  const project = {
+    protected: {
+      companyName: '測試生技股份有限公司',
+      round: 'Series A',
+      teamSummary: '藥物開發與商務團隊',
+      useOfFunds: '["臨床驗證", "法規申請"]',
+      financialSummary: '最近年度營收與現金水位摘要',
+      reports: [
+        { id: 'AI-1', type: 'ai', status: 'approved', version: '2.1', basisDate: '2026-07-31', reviewedBy: '王藥師' },
+        { id: 'EX-1', reportType: 'expert', approved: true, versionNumber: 3, dataBasisDate: '2026-08-01', reviewer: '李博士' },
+        { id: 'AI-DRAFT', type: 'ai', status: 'draft', version: 4 },
+        { id: 'OTHER', type: 'marketing', status: 'approved', version: 1 },
+      ],
+    },
+  };
+  const content = protectedProjectContent(project);
+  assert.equal(content.companyName, '測試生技股份有限公司');
+  assert.deepEqual(content.useOfFunds, ['臨床驗證', '法規申請']);
+  assert.deepEqual(approvedProjectReports(project), [
+    { id: 'AI-1', type: 'ai', version: '2.1', basisDate: '2026-07-31', reviewedBy: '王藥師' },
+    { id: 'EX-1', type: 'expert', version: 3, basisDate: '2026-08-01', reviewedBy: '李博士' },
+  ]);
 });
 
 test('state mutations obtain an auth/me CSRF token and send credentialed requests', async (t) => {

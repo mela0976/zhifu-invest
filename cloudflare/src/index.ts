@@ -13,7 +13,10 @@ import {
   deleteSession,
   getSession,
 } from './db';
+import { appsScriptErrorStatus } from './errors';
 import type { Actor, GatewayEnv, Session } from './types';
+import { drainWebhookEvents, enqueueWebhookEvents } from './webhook';
+import type { LineWebhookPayload } from './webhook';
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -125,7 +128,8 @@ function actorFor(session: Session | null): Actor {
 function canAccess(required: RouteMatch['access'], session: Session | null): boolean {
   if (required === 'public') return true;
   if (!session) return false;
-  return required === 'member' ? ['member', 'admin'].includes(session.role) : session.role === 'admin';
+  if (required === 'admin') return session.role === 'admin';
+  return session.role === 'admin' || (session.role === 'member' && Boolean(session.memberId?.trim()));
 }
 
 function csrfError(request: Request, session: Session | null, pathname: string): Response | null {
@@ -174,6 +178,7 @@ async function requestPayload(request: Request, match: RouteMatch, session: Sess
       ...base,
       projectId: body.projectId,
       requestedAmountTwd: body.requestedAmountTwd ?? body.requestedAmount,
+      riskAcknowledged: body.riskAcknowledged === true || body.riskAcknowledged === 'true',
       idempotencyKey: request.headers.get('idempotency-key') || body.idempotencyKey,
     };
   }
@@ -224,14 +229,37 @@ async function proxy(request: Request, env: GatewayEnv, match: RouteMatch, sessi
       : jsonError(400, 'invalid_json', 'Request body must be valid JSON');
   }
   const result = await callAppsScript(env, match.operation, payload);
+  if (result.ok && match.operation === 'adminExport') {
+    const data = result.data;
+    if (!isCsvExport(data)) {
+      return jsonError(502, 'apps_script_invalid_response', 'Operations backend returned an invalid CSV export');
+    }
+    const filename = data.filename.trim() || 'zhifu-export.csv';
+    return new Response(data.csv, {
+      status: 200,
+      headers: {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      },
+    });
+  }
   return new Response(JSON.stringify(result), {
-    status: result.ok ? 200 : result.error.code === 'forbidden' ? 403 : 502,
+    status: result.ok ? 200 : appsScriptErrorStatus(result.error.code),
     headers: JSON_HEADERS,
   });
 }
 
+function isCsvExport(value: unknown): value is { filename: string; csv: string } {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.filename === 'string' && typeof candidate.csv === 'string';
+}
+
 async function createDeckToken(request: Request, env: GatewayEnv, projectId: string, session: Session | null): Promise<Response> {
   if (!session) return jsonError(401, 'authentication_required', 'Please sign in with LINE');
+  if (!session.memberId?.trim()) {
+    return jsonError(403, 'identity_not_linked', 'Member identity is not linked');
+  }
   const authorization = await callAppsScript<{
     allowed?: boolean;
     deckId?: string;
@@ -248,7 +276,13 @@ async function createDeckToken(request: Request, env: GatewayEnv, projectId: str
       requestId: crypto.randomUUID(),
     },
   });
-  if (!authorization.ok) return jsonError(502, authorization.error.code, authorization.error.message);
+  if (!authorization.ok) {
+    return jsonError(
+      appsScriptErrorStatus(authorization.error.code),
+      authorization.error.code,
+      authorization.error.message,
+    );
+  }
   const decision = authorization.data.authorization || authorization.data;
   const objectKey = decision.objectKey || decision.deckId;
   if (decision.allowed === false || !objectKey) {
@@ -333,76 +367,6 @@ async function downloadDeck(
   return new Response(object.body, { headers });
 }
 
-type LineWebhookEvent = {
-  webhookEventId?: string;
-  type?: string;
-  timestamp?: number;
-  mode?: string;
-  replyToken?: string;
-  source?: { type?: string; userId?: string; groupId?: string; roomId?: string };
-  message?: { id?: string; type?: string; text?: string };
-  postback?: { data?: string };
-};
-
-function minimalLineEvent(event: LineWebhookEvent) {
-  return {
-    webhookEventId: event.webhookEventId,
-    type: event.type || 'unknown',
-    timestamp: event.timestamp || null,
-    mode: event.mode || null,
-    replyToken: event.replyToken || null,
-    source: event.source ? {
-      type: event.source.type || null,
-      userId: event.source.userId || null,
-      groupId: event.source.groupId || null,
-      roomId: event.source.roomId || null,
-    } : null,
-    message: event.message ? {
-      id: event.message.id || null,
-      type: event.message.type || null,
-      text: event.message.type === 'text' ? (event.message.text || '').slice(0, 5000) : null,
-    } : null,
-    postback: event.postback ? { data: (event.postback.data || '').slice(0, 2048) } : null,
-  };
-}
-
-async function processWebhook(env: GatewayEnv, payload: {
-  events?: LineWebhookEvent[];
-  destination?: string;
-}): Promise<void> {
-  const receivedAt = Date.now();
-  const accepted: LineWebhookEvent[] = [];
-  for (const event of payload.events || []) {
-    const eventId = event.webhookEventId;
-    if (!eventId) continue;
-    const inserted = await env.DB.prepare(
-      `INSERT OR IGNORE INTO webhook_events (webhook_event_id, event_type, received_at)
-       VALUES (?1, ?2, ?3)`,
-    ).bind(eventId, event.type || 'unknown', receivedAt).run();
-    if (inserted.meta.changes === 1) accepted.push(event);
-  }
-  if (!accepted.length) return;
-  for (const event of accepted) {
-    const minimal = minimalLineEvent(event);
-    const result = await callAppsScript(env, 'webhookEvent', {
-      context: { role: 'service', actorId: 'cloudflare-line-webhook', requestId: event.webhookEventId },
-      destination: payload.destination || null,
-      event: {
-        ...minimal,
-        lineUserId: minimal.source?.userId || null,
-      },
-      receivedAt,
-    });
-    const forwardedAt = result.ok ? Date.now() : null;
-    const lastError = result.ok ? null : `${result.error.code}: ${result.error.message}`;
-    await env.DB.prepare(
-      `UPDATE webhook_events
-          SET attempts = attempts + 1, forwarded_at = ?1, last_error = ?2
-        WHERE webhook_event_id = ?3`,
-    ).bind(forwardedAt, lastError, event.webhookEventId).run();
-  }
-}
-
 async function acceptWebhook(request: Request, env: GatewayEnv, ctx: ExecutionContext): Promise<Response> {
   if (!env.LINE_MESSAGING_CHANNEL_SECRET) {
     return jsonError(503, 'line_webhook_not_configured', 'LINE webhook verification is not configured');
@@ -420,13 +384,33 @@ async function acceptWebhook(request: Request, env: GatewayEnv, ctx: ExecutionCo
   if (!timingSafeBase64Equal(expected, provided)) {
     return jsonError(401, 'invalid_line_signature', 'LINE webhook signature is invalid');
   }
-  let payload: { events?: LineWebhookEvent[]; destination?: string };
+  let payload: LineWebhookPayload;
   try {
-    payload = JSON.parse(new TextDecoder().decode(raw));
+    const decoded: unknown = JSON.parse(new TextDecoder().decode(raw));
+    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+      return jsonError(400, 'invalid_json', 'Webhook body must be a JSON object');
+    }
+    payload = decoded;
   } catch {
     return jsonError(400, 'invalid_json', 'Webhook body must be valid JSON');
   }
-  ctx.waitUntil(processWebhook(env, payload));
+  try {
+    await enqueueWebhookEvents(env, payload);
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: 'error',
+      event: 'line_webhook_persist_failed',
+      message: error instanceof Error ? error.message : String(error),
+    }));
+    return jsonError(503, 'webhook_persistence_failed', 'LINE webhook could not be persisted');
+  }
+  ctx.waitUntil(drainWebhookEvents(env).catch((error) => {
+    console.error(JSON.stringify({
+      level: 'error',
+      event: 'line_webhook_drain_failed',
+      message: error instanceof Error ? error.message : String(error),
+    }));
+  }));
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers: JSON_HEADERS });
 }
 
@@ -447,7 +431,6 @@ async function handle(request: Request, env: GatewayEnv, ctx: ExecutionContext):
     });
   }
 
-  ctx.waitUntil(cleanupExpired(env));
   if (request.method === 'GET' && url.pathname === '/healthz') {
     return Response.json({ ok: true, service: 'zhifu-invest-gateway', environment: env.ENVIRONMENT });
   }
@@ -462,6 +445,7 @@ async function handle(request: Request, env: GatewayEnv, ctx: ExecutionContext):
         lineOaBasicId,
         addFriendUrl: lineOaBasicId ? `https://line.me/R/ti/p/${encodeURIComponent(lineOaBasicId)}` : null,
         lineAddFriendUrl: lineOaBasicId ? `https://line.me/R/ti/p/${encodeURIComponent(lineOaBasicId)}` : null,
+        adminDashboardUrl: env.ADMIN_DASHBOARD_URL?.trim() || null,
         gatewayMode: 'cloudflare',
       },
     });
@@ -532,5 +516,17 @@ export default {
       }));
       return withHeaders(jsonError(500, 'internal_error', 'Unexpected gateway error'), request, env);
     }
+  },
+  async scheduled(_controller: ScheduledController, env: GatewayEnv, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil((async () => {
+      await drainWebhookEvents(env);
+      await cleanupExpired(env);
+    })().catch((error) => {
+      console.error(JSON.stringify({
+        level: 'error',
+        event: 'gateway_scheduled_maintenance_failed',
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    }));
   },
 } satisfies ExportedHandler<GatewayEnv>;

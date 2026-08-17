@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 const paths = {
   landing: process.env.E2E_LANDING_PATH || '/',
+  activate: process.env.E2E_ACTIVATE_PATH || '/activate.html',
   demoLogin: process.env.E2E_DEMO_LOGIN_PATH || '/',
   projects: process.env.E2E_PROJECTS_PATH || '/projects',
   admin: process.env.E2E_ADMIN_PATH || '/admin',
@@ -127,6 +128,10 @@ async function memberSnapshot(page) {
     .or(page.locator('[aria-label="目前登入會員"]'))
     .first();
   await expect(identity, 'The member surface should identify the current demo member.').toBeVisible();
+  await expect(
+    identity,
+    'The asynchronous member identity must replace the loading placeholder before assertions.',
+  ).toHaveAttribute('data-member-id', /^(?!M-——$).+/);
 
   const identityText = (await identity.getAttribute('data-member-id'))
     || (await identity.textContent())?.replace(/\s+/g, ' ').trim();
@@ -187,6 +192,12 @@ test.describe('致富投資 mobile and role journeys', () => {
     await expect(page.getByText('預約需求已送出，雪芬姐確認後會通知你。')).toBeVisible();
   });
 
+  test('community activation link prefills source tracking fields', async ({ page }) => {
+    await page.goto(`${paths.activate}?sourceCode=SF-NORTH&sourceName=${encodeURIComponent('雪芬姐北區 OpenChat')}`, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#activation-code')).toHaveValue('SF-NORTH');
+    await expect(page.locator('#activation-source')).toHaveValue('雪芬姐北區 OpenChat');
+  });
+
   test('two demo members receive isolated private records', async ({ baseURL, browser }) => {
     const contextOptions = { baseURL, locale: 'zh-TW', timezoneId: 'Asia/Taipei' };
     const contextA = await browser.newContext(contextOptions);
@@ -234,6 +245,9 @@ test.describe('致富投資 mobile and role journeys', () => {
         .first(),
     ).toBeVisible();
 
+    await page.locator('[data-admin-nav="bookings"]:visible').first().click();
+    await expect(page.getByTestId('admin-booking').first()).toBeVisible();
+
     await expectNoHorizontalOverflow(page);
   });
 
@@ -269,6 +283,9 @@ test.describe('致富投資 mobile and role journeys', () => {
       if (!(await clickIfVisible(openFromCard))) {
         await project.click();
       }
+
+      await expect(memberPage.getByTestId('protected-company')).toBeVisible();
+      await expect(memberPage.getByTestId('approved-report')).toHaveCount(2);
 
       const openSubscription = actionable(
         memberPage,

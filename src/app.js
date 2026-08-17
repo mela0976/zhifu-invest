@@ -17,6 +17,7 @@ import { createLineProvider, statusMessage } from './line.js';
 import { createDemoDeckPdf } from './pdf.js';
 
 const ADMIN_ROLE = 'admin';
+const NOTIFICATION_MAX_ATTEMPTS = 4;
 
 function error(c, status, code, message, details) {
   return c.json({ ok: false, error: { code, message, ...(details ? { details } : {}) } }, status);
@@ -75,7 +76,7 @@ function enrichedSubscription(subscription, data) {
   const project = data.projects.find((item) => item.id === subscription.projectId);
   return {
     ...subscription,
-    memberName: member?.displayName || '未知會員',
+    memberName: member?.legalName || member?.displayName || '未知會員',
     projectName: project?.displayName || '未知專案',
     requestedAmount: subscription.requestedAmountTwd,
     approvedAmount: subscription.approvedAmountTwd,
@@ -92,7 +93,7 @@ function enrichedMember(member, data) {
   const subscriptions = data.subscriptions.filter((item) => item.memberId === member.id);
   return {
     ...member,
-    name: member.displayName,
+    name: member.legalName || member.displayName,
     source: member.sourceGroup,
     membership: member.membershipState,
     qualification: member.qualificationState,
@@ -176,7 +177,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       const record = draft.notifications.find((item) => item.id === notificationId);
       if (!record) throw new DomainError('Notification was not found', 'notification_not_found', 404);
       if (record.status === 'sent') return record;
-      if (!force && (record.status === 'awaiting_confirmation' || record.attempts >= 3)) return record;
+      if (!force && (record.status === 'awaiting_confirmation' || record.attempts >= NOTIFICATION_MAX_ATTEMPTS)) return record;
       record.status = 'sending';
       record.updatedAt = new Date().toISOString();
       return record;
@@ -207,7 +208,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         const before = structuredClone(record);
         record.attempts += 1;
         record.lastError = String(caught.message || caught);
-        record.status = record.attempts >= 3 ? 'failed' : 'queued';
+        record.status = record.attempts >= NOTIFICATION_MAX_ATTEMPTS ? 'failed' : 'queued';
         record.updatedAt = new Date().toISOString();
         await store.appendAudit(draft, {
           entityType: 'notification', entityId: record.id, action: 'notification.failed', actor,
@@ -363,7 +364,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       if (found) return found;
       const now = new Date().toISOString();
       found = {
-        id: `member-${randomUUID()}`, demo: false, displayName, phone: '', email: '', lineUserId,
+        id: `member-${randomUUID()}`, demo: false, displayName, legalName: '', phone: '', email: '', lineUserId,
         lineFriendshipState: 'unknown', sourceGroup: '', membershipState: 'pending',
         qualificationState: 'not_applied', qualificationApproval: null, tier: 'free', projectAccess: [],
         createdAt: now, updatedAt: now,
@@ -407,26 +408,50 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const denied = gate(c, ['member']);
     if (denied) return denied;
     const body = await jsonBody(c);
-    if (!body.fullName || !body.phone || !body.sourceCode) {
-      return error(c, 400, 'missing_fields', 'fullName, phone and sourceCode are required');
+    const privacyConsent = body.privacyConsent === true || body.privacyConsent === 'true';
+    const lineFriendConfirmed = body.lineFriendConfirmed === true || body.lineFriendConfirmed === 'true';
+    const phone = String(body.phone || '').replace(/[\s-]/g, '');
+    if (!body.fullName || !phone || !body.sourceCode || !body.sourceName) {
+      return error(c, 400, 'missing_fields', 'fullName, phone, sourceCode and sourceName are required');
+    }
+    if (!/^09\d{8}$/.test(phone)) {
+      return error(c, 400, 'invalid_phone', 'A valid Taiwan mobile number is required');
+    }
+    if (!privacyConsent || !lineFriendConfirmed) {
+      return error(c, 409, 'consent_required', 'LINE friend confirmation and privacy consent are required');
     }
     const result = await store.mutate(async (draft) => {
       const member = sessionMember(c, draft);
       if (!member) throw new DomainError('Member not found', 'member_not_found', 404);
+      if (member.lineFriendshipState !== 'friend') {
+        throw new DomainError(
+          'The LINE Official Account friendship must be verified before activation',
+          'line_friendship_required',
+          409,
+        );
+      }
       const before = structuredClone(member);
-      member.displayName = String(body.fullName).trim();
-      member.phone = String(body.phone).trim();
-      member.sourceGroup = String(body.sourceCode).trim();
+      member.legalName = String(body.fullName).trim();
+      member.phone = phone;
+      member.sourceGroup = String(body.sourceName).trim();
       member.membershipState = 'pending';
       member.updatedAt = new Date().toISOString();
       const activation = {
         id: `activation-${randomUUID()}`, memberId: member.id, status: 'pending',
-        sourceCode: member.sourceGroup, submittedAt: member.updatedAt,
+        fullName: member.legalName, phone: member.phone, sourceCode: String(body.sourceCode).trim(),
+        sourceName: member.sourceGroup, lineFriendConfirmed: true,
+        lineFriendshipEvidence: member.lineFriendshipState, privacyConsent: true,
+        consentedAt: member.updatedAt, submittedAt: member.updatedAt,
       };
       draft.activations.push(activation);
       await store.appendAudit(draft, {
         entityType: 'member', entityId: member.id, action: 'activation.submitted', actor: actorFrom(c),
-        before, after: member, reason: 'Member submitted community activation',
+        before: { membershipState: before.membershipState, sourceGroup: before.sourceGroup },
+        after: {
+          membershipState: member.membershipState, sourceGroup: member.sourceGroup,
+          activationId: activation.id, privacyConsent: true, consentedAt: activation.consentedAt,
+        },
+        reason: 'Member submitted community activation',
       });
       await queueNotification(draft, { member, eventType: 'activation.received', actor: actorFrom(c) });
       await queueOperationsNotification(draft, 'operations.activation_received', { memberId: member.id });
@@ -506,6 +531,10 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     if (!idempotencyKey || String(idempotencyKey).length < 8) {
       return error(c, 400, 'idempotency_key_required', 'An Idempotency-Key of at least 8 characters is required');
     }
+    const riskAcknowledged = body.riskAcknowledged === true || body.riskAcknowledged === 'true';
+    if (!riskAcknowledged) {
+      return error(c, 409, 'risk_acknowledgement_required', 'The current risk disclosure must be acknowledged');
+    }
     const result = await store.mutate(async (draft) => {
       const scope = `subscription:${c.get('session').memberId}:${idempotencyKey}`;
       if (draft.idempotency[scope]) {
@@ -520,7 +549,11 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       const now = new Date().toISOString();
       const record = createSubscriptionRecord({
         id: `subscription-${randomUUID()}`, memberId: member.id, projectId: project.id,
-        requestedAmountTwd: body.requestedAmountTwd ?? body.requestedAmount, now,
+        requestedAmountTwd: body.requestedAmountTwd ?? body.requestedAmount,
+        riskAcknowledged: true,
+        riskAcknowledgedAt: now,
+        riskDisclosureVersion: 'draft-0.1-2026-08-18',
+        now,
       });
       if (record.requestedAmountTwd < project.protected.minimumAmountTwd || record.requestedAmountTwd % project.protected.incrementAmountTwd !== 0) {
         throw new DomainError('Requested amount does not meet project minimum or increment', 'amount_rule_violation', 409);
@@ -688,10 +721,22 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         assertTransition('qualification', member.qualificationState, body.qualificationState);
         if (body.qualificationState === 'approved') {
           const approval = body.qualificationApproval;
-          if (!approval?.approver || !approval?.approvedAt || !approval?.reference) {
-            throw new DomainError('External partner approval evidence is required', 'approval_required', 409);
+          const approvedAt = Date.parse(approval?.approvedAt || '');
+          const expiresAt = Date.parse(approval?.expiresAt || '');
+          const clockSkewMs = 5 * 60 * 1000;
+          if (!approval?.approver || !approval?.reference || !Number.isFinite(approvedAt)
+            || approvedAt > Date.now() + clockSkewMs || !Number.isFinite(expiresAt)
+            || expiresAt <= Date.now() || expiresAt <= approvedAt) {
+            throw new DomainError('Valid external approval, reference and future expiry evidence are required', 'approval_required', 409);
           }
-          member.qualificationApproval = approval;
+          member.qualificationApproval = {
+            approver: String(approval.approver).trim(),
+            approvedAt: new Date(approvedAt).toISOString(),
+            reference: String(approval.reference).trim(),
+            expiresAt: new Date(expiresAt).toISOString(),
+          };
+        } else {
+          member.qualificationApproval = null;
         }
         member.qualificationState = body.qualificationState;
       }
@@ -819,7 +864,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const denied = gate(c, [ADMIN_ROLE]);
     if (denied) return denied;
     const queued = store.snapshot().notifications
-      .filter((item) => item.status === 'queued' && item.attempts < 3)
+      .filter((item) => item.status === 'queued' && item.attempts < NOTIFICATION_MAX_ATTEMPTS)
       .slice(0, 20)
       .map((item) => item.id);
     const results = [];

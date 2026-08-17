@@ -50,8 +50,9 @@ function showProject(id) {
   if (!project) return;
   dialogTitle.textContent = project.displayName || project.name;
   const highlights = project.highlights || [];
+  const demoPrefix = project.demo || api.isDemo() ? '<strong>DEMO</strong>｜' : '';
   dialogBody.innerHTML = `
-    <p class="notice">DEMO／公開頁只提供匿名摘要，完整公司資料與募資條件須完成資格及逐案授權。</p>
+    <p class="notice">${demoPrefix}公開頁只提供匿名摘要，完整公司資料與募資條件須完成資格及逐案授權。</p>
     <p class="lede" style="font-size:17px">${escapeHtml(project.summary)}</p>
     <dl class="qualification"><div class="qualification__head"><h3>研究索引</h3><span class="status">${escapeHtml(project.status || '研究中')}</span></div><dl>
       <dt>產業</dt><dd>${escapeHtml(project.industry)}</dd><dt>階段</dt><dd>${escapeHtml(project.stage)}</dd><dt>地區</dt><dd>${escapeHtml(project.region)}</dd><dt>最低認購</dt><dd>登入並取得權限後查看</dd>

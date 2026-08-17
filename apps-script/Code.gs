@@ -8,6 +8,11 @@ function createId_(prefix) {
   return prefix + '-' + Utilities.getUuid().toLowerCase();
 }
 
+var ZF_ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+var ZF_ADMIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
+var ZF_ADMIN_LOCKOUT_MS = 15 * 60 * 1000;
+var ZF_ADMIN_MAX_FAILURES = 5;
+
 function jsonOutput_(body) {
   return ContentService.createTextOutput(JSON.stringify(body))
     .setMimeType(ContentService.MimeType.JSON);
@@ -81,22 +86,250 @@ function setupWorkbook(spreadsheetId) {
   return { spreadsheetId: workbook.getId(), url: workbook.getUrl(), sheets: Object.keys(ZF_SCHEMA) };
 }
 
+/** Explicit deployment preflight. Returns no secret material. */
+function validateDeploymentConfiguration() {
+  var configuration = adminConfiguration_();
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var gatewaySecret = scriptProperties.getProperty('GATEWAY_SHARED_SECRET') || '';
+  if (gatewaySecret.length < 32) {
+    throw domainError_('GATEWAY_SHARED_SECRET must contain at least 32 characters', 'configuration_error', 500);
+  }
+  if (!scriptProperties.getProperty('SPREADSHEET_ID')) {
+    throw domainError_('SPREADSHEET_ID Script Property is not configured', 'configuration_error', 500);
+  }
+  return {
+    ok: true,
+    administratorCount: configuration.emails.length,
+    administrators: configuration.emails.slice(),
+    totpConfigured: true,
+    gatewaySecretConfigured: true,
+    spreadsheetConfigured: true
+  };
+}
+
+function notificationQueueTriggers_() {
+  return ScriptApp.getProjectTriggers().filter(function (trigger) {
+    return trigger.getHandlerFunction() === 'processNotificationQueue';
+  });
+}
+
+/** Run manually before production deployment. Never returns secret values. */
+function productionPreflight() {
+  var actor = assertAdminIdentity_();
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var requiredKeys = [
+    'SPREADSHEET_ID',
+    'GATEWAY_SHARED_SECRET',
+    'LINE_MESSAGING_ACCESS_TOKEN',
+    'MEMBER_APP_BASE_URL'
+  ];
+  var missing = requiredKeys.filter(function (key) {
+    var value = String(scriptProperties.getProperty(key) || '').trim();
+    if (!value) return true;
+    return key === 'GATEWAY_SHARED_SECRET' && value.length < 32;
+  });
+  if (missing.length) {
+    throw domainError_('Missing or invalid production properties: ' + missing.join(', '), 'configuration_error', 500);
+  }
+  var configuration = adminConfiguration_();
+  var triggers = notificationQueueTriggers_();
+  if (triggers.length > 1) {
+    throw domainError_('Multiple processNotificationQueue triggers exist; keep exactly one', 'configuration_error', 500);
+  }
+  return {
+    ok: true,
+    adminEmail: actor.email,
+    administratorCount: configuration.emails.length,
+    notificationTriggerCount: triggers.length,
+    spreadsheetConfigured: true,
+    gatewayConfigured: true,
+    lineMessagingConfigured: true
+  };
+}
+
+/** Idempotently install the sole five-minute notification worker trigger. */
+function installNotificationQueueTrigger() {
+  var status = productionPreflight();
+  var triggers = notificationQueueTriggers_();
+  if (triggers.length === 1) {
+    status.notificationTriggerCount = 1;
+    status.triggerCreated = false;
+    return status;
+  }
+  ScriptApp.newTrigger('processNotificationQueue').timeBased().everyMinutes(5).create();
+  status.notificationTriggerCount = 1;
+  status.triggerCreated = true;
+  return status;
+}
+
 function assertAdminIdentity_() {
   var email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
-  var configured = PropertiesService.getScriptProperties().getProperty('ADMIN_EMAILS') || '';
-  var allowlist = configured.split(',').map(function (value) {
-    return value.trim().toLowerCase();
-  }).filter(Boolean);
-  if (!email || allowlist.indexOf(email) === -1) {
+  var configuration = adminConfiguration_();
+  if (!email || configuration.emails.indexOf(email) === -1) {
     throw domainError_('Google account is not authorized', 'forbidden', 403);
   }
+  if (!configuration.totpSecrets[email]) {
+    throw domainError_('Admin TOTP secret is not configured', 'configuration_error', 500);
+  }
   return { type: 'admin', id: email, email: email, role: 'admin' };
+}
+
+function adminConfiguration_() {
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var emails = (scriptProperties.getProperty('ADMIN_EMAILS') || '')
+    .split(',').map(function (value) { return value.trim().toLowerCase(); }).filter(Boolean)
+    .filter(function (email, index, values) { return values.indexOf(email) === index; });
+  if (emails.length < 2) {
+    throw domainError_('ADMIN_EMAILS must contain at least two unique administrators', 'configuration_error', 500);
+  }
+  var totpSecrets;
+  try {
+    totpSecrets = JSON.parse(scriptProperties.getProperty('ADMIN_TOTP_SECRETS_JSON') || '{}');
+  } catch (error) {
+    throw domainError_('ADMIN_TOTP_SECRETS_JSON is invalid', 'configuration_error', 500);
+  }
+  emails.forEach(function (email) {
+    if (typeof totpSecrets[email] !== 'string' || totpSecrets[email].replace(/[^A-Z2-7]/gi, '').length < 16) {
+      throw domainError_('Every ADMIN_EMAILS account requires a Base32 TOTP secret', 'configuration_error', 500);
+    }
+  });
+  return { emails: emails, totpSecrets: totpSecrets };
+}
+
+function withAdminAuthLock_(callback) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return callback();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function sha256Base64_(value) {
+  return Utilities.base64Encode(Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(value),
+    Utilities.Charset.UTF_8
+  ));
+}
+
+function readAdminAuthStates_() {
+  try {
+    var parsed = JSON.parse(PropertiesService.getScriptProperties().getProperty('ADMIN_AUTH_STATES_JSON') || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    throw domainError_('ADMIN_AUTH_STATES_JSON is invalid', 'configuration_error', 500);
+  }
+}
+
+function writeAdminAuthStates_(states) {
+  PropertiesService.getScriptProperties().setProperty('ADMIN_AUTH_STATES_JSON', JSON.stringify(states));
+}
+
+function recordAdminAuthFailure_(states, email, nowMs, code) {
+  var state = states[email] || {};
+  var windowStart = Number(state.windowStart || 0);
+  var failures = nowMs - windowStart <= ZF_ADMIN_FAILURE_WINDOW_MS ? Number(state.failures || 0) + 1 : 1;
+  state.windowStart = nowMs - windowStart <= ZF_ADMIN_FAILURE_WINDOW_MS ? windowStart : nowMs;
+  state.failures = failures;
+  if (failures >= ZF_ADMIN_MAX_FAILURES) state.lockUntil = nowMs + ZF_ADMIN_LOCKOUT_MS;
+  states[email] = state;
+  writeAdminAuthStates_(states);
+  if (state.lockUntil && state.lockUntil > nowMs) {
+    throw domainError_('Too many two-factor attempts; try again later', 'admin_two_factor_locked', 429);
+  }
+  throw domainError_('Two-factor code is invalid', code || 'admin_two_factor_invalid', 403);
+}
+
+function authenticateAdminTotpForEmail_(email, suppliedCode, nowMs) {
+  var configuration = adminConfiguration_();
+  if (configuration.emails.indexOf(email) === -1) {
+    throw domainError_('Google account is not authorized', 'forbidden', 403);
+  }
+  var now = nowMs === undefined ? Date.now() : nowMs;
+  var states = readAdminAuthStates_();
+  var state = states[email] || {};
+  if (Number(state.lockUntil || 0) > now) {
+    throw domainError_('Too many two-factor attempts; try again later', 'admin_two_factor_locked', 429);
+  }
+  var counter = matchingTotpCounter_(configuration.totpSecrets[email], suppliedCode, now);
+  if (counter === null) recordAdminAuthFailure_(states, email, now, 'admin_two_factor_invalid');
+  if (counter <= Number(state.lastCounter === undefined ? -1 : state.lastCounter)) {
+    recordAdminAuthFailure_(states, email, now, 'admin_two_factor_replayed');
+  }
+  states[email] = { lastCounter: counter, failures: 0, windowStart: 0, lockUntil: 0 };
+  writeAdminAuthStates_(states);
+  return counter;
+}
+
+function issueAdminSession_(actor, nowMs) {
+  var now = nowMs === undefined ? Date.now() : nowMs;
+  var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  var session = {
+    email: actor.email,
+    tokenHash: sha256Base64_(token),
+    expiresAt: now + ZF_ADMIN_SESSION_TTL_MS
+  };
+  PropertiesService.getUserProperties().setProperty('ADMIN_HTML_SESSION_JSON', JSON.stringify(session));
+  return { token: token, expiresAt: session.expiresAt };
+}
+
+function assertAdminSession_(sessionToken, nowMs) {
+  var actor = assertAdminIdentity_();
+  var userProperties = PropertiesService.getUserProperties();
+  var session;
+  try {
+    session = JSON.parse(userProperties.getProperty('ADMIN_HTML_SESSION_JSON') || '{}');
+  } catch (error) {
+    session = {};
+  }
+  var now = nowMs === undefined ? Date.now() : nowMs;
+  if (!sessionToken || session.email !== actor.email || Number(session.expiresAt || 0) <= now ||
+      !constantTimeEqual_(String(session.tokenHash || ''), sha256Base64_(sessionToken))) {
+    if (Number(session.expiresAt || 0) <= now) userProperties.deleteProperty('ADMIN_HTML_SESSION_JSON');
+    throw domainError_('Admin two-factor session is missing or expired', 'admin_session_required', 401);
+  }
+  return actor;
+}
+
+function adminAuthenticateTotp(code) {
+  try {
+    var actor = assertAdminIdentity_();
+    var data = withAdminAuthLock_(function () {
+      authenticateAdminTotpForEmail_(actor.email, code);
+      var session = issueAdminSession_(actor);
+      return { token: session.token, expiresAt: session.expiresAt, email: actor.email };
+    });
+    return { ok: true, data: data };
+  } catch (error) {
+    return { ok: false, error: publicError_(error) };
+  }
+}
+
+function adminSessionStatus(sessionToken) {
+  try {
+    var actor = assertAdminSession_(sessionToken);
+    return { ok: true, data: { authenticated: true, email: actor.email } };
+  } catch (error) {
+    return { ok: false, error: publicError_(error) };
+  }
+}
+
+function adminLogout(sessionToken) {
+  try {
+    assertAdminSession_(sessionToken);
+    PropertiesService.getUserProperties().deleteProperty('ADMIN_HTML_SESSION_JSON');
+    return { ok: true, data: { authenticated: false } };
+  } catch (error) {
+    return { ok: false, error: publicError_(error) };
+  }
 }
 
 /** Called only by the HtmlService dashboard through google.script.run. */
 function adminRpc(request) {
   try {
-    var actor = assertAdminIdentity_();
+    var actor = assertAdminSession_(request && request.sessionToken);
     if (!request || typeof request.operation !== 'string') {
       throw domainError_('operation is required', 'invalid_request');
     }
@@ -224,7 +457,10 @@ function operationResolveLineIdentity_(payload) {
 function operationListBookings_(payload, context) {
   assertRole_(context, ['member', 'qualified', 'admin']);
   var memberId = context.role === 'admin' ? normalizeOptionalString_(payload.memberId || (payload.query && payload.query.memberId), 100) : context.memberId;
-  if (context.role !== 'admin') assertOwnMemberScope_(context, memberId);
+  if (context.role !== 'admin') {
+    assertOwnMemberScope_(context, memberId);
+    requireRecord_('Members', memberId);
+  }
   return { bookings: storeList_('Bookings').filter(function (booking) {
     return memberId ? booking.memberId === memberId : true;
   }) };
@@ -360,7 +596,7 @@ function operationGetMember_(payload, context) {
 }
 
 function memberForContext_(context) {
-  if (!context.memberId) return null;
+  if (!context.memberId) throw domainError_('Member identity is not linked', 'identity_not_linked', 403);
   return requireRecord_('Members', context.memberId);
 }
 
@@ -380,7 +616,10 @@ function operationGetProject_(payload, context) {
 function operationListSubscriptions_(payload, context) {
   assertRole_(context, ['member', 'qualified', 'admin']);
   var memberId = context.role === 'admin' ? normalizeOptionalString_(payload.memberId, 100) : context.memberId;
-  if (context.role !== 'admin') assertOwnMemberScope_(context, memberId);
+  if (context.role !== 'admin') {
+    assertOwnMemberScope_(context, memberId);
+    requireRecord_('Members', memberId);
+  }
   var records = storeList_('Subscriptions').filter(function (record) {
     return memberId ? record.memberId === memberId : true;
   });
@@ -390,7 +629,8 @@ function operationListSubscriptions_(payload, context) {
 function operationCreateBooking_(payload, context) {
   assertRole_(context, ['visitor', 'member', 'qualified', 'admin', 'service']);
   var input = payload.booking || {};
-  var member = context.memberId ? storeFindById_('Members', context.memberId) : null;
+  var member = context.role === 'member' || context.role === 'qualified' ?
+    memberForContext_(context) : (context.memberId ? storeFindById_('Members', context.memberId) : null);
   var now = nowIso_();
   var booking = {
     id: createId_('booking'),
@@ -435,6 +675,13 @@ function operationCreateActivation_(payload, context) {
   if (!lineFriendConfirmed || !privacyConsent) {
     throw domainError_('LINE friend confirmation and privacy consent are required', 'consent_required', 409);
   }
+  if (member.lineFriendshipState !== 'friend') {
+    throw domainError_(
+      'LINE Official Account friendship is not verified; add the account and sign in again before activation',
+      'line_friendship_required',
+      409
+    );
+  }
   var now = nowIso_();
   var activation = {
     id: createId_('activation'),
@@ -447,6 +694,7 @@ function operationCreateActivation_(payload, context) {
     sourceName: sourceName,
     identityNote: normalizeOptionalString_(input.identityNote, 1000),
     lineFriendConfirmed: true,
+    lineFriendshipState: member.lineFriendshipState,
     privacyConsent: true,
     consentedAt: now,
     state: 'submitted',
@@ -465,7 +713,9 @@ function operationCreateActivation_(payload, context) {
     actor: actorFromContext_(context), before: null,
     after: {
       id: activation.id, memberId: member.id, sourceCode: activation.sourceCode,
-      sourceName: sourceName, state: activation.state, privacyConsent: true, consentedAt: now
+      sourceName: sourceName, state: activation.state,
+      lineFriendshipState: activation.lineFriendshipState,
+      privacyConsent: true, consentedAt: now
     },
     requestId: context.requestId
   });
@@ -496,18 +746,25 @@ function operationCreateSubscription_(payload, context) {
     return { subscription: requireRecord_('Subscriptions', priorAudit.entityId), replayed: true };
   }
   var requested = normalizeTwd_(payload.requestedAmountTwd, 'requestedAmountTwd');
+  if (payload.riskAcknowledged !== true) {
+    throw domainError_('The current risk disclosure must be acknowledged', 'risk_acknowledgement_required', 409);
+  }
   var minimum = normalizeTwd_(project.minimumAmountTwd, 'minimumAmountTwd');
   var increment = normalizeTwd_(project.incrementAmountTwd, 'incrementAmountTwd');
   if (requested < minimum || (increment > 0 && (requested - minimum) % increment !== 0)) {
     throw domainError_('Requested amount does not match project minimum/increment rules', 'invalid_amount', 409);
   }
+  var createdAt = nowIso_();
   var subscription = createSubscriptionRecord_({
     id: createId_('subscription'),
     demo: false,
     memberId: member.id,
     projectId: project.id,
-    requestedAmountTwd: requested
-  }, nowIso_());
+    requestedAmountTwd: requested,
+    riskAcknowledged: true,
+    riskAcknowledgedAt: createdAt,
+    riskDisclosureVersion: 'draft-0.1-2026-08-18'
+  }, createdAt);
   storeAppend_('Subscriptions', subscription);
   appendAudit_({
     entityType: 'subscription', entityId: subscription.id, action: 'subscription.created',
@@ -831,13 +1088,18 @@ function totpCode_(secret, counter) {
   return String((binary >>> 0) % 1000000).padStart(6, '0');
 }
 
-function verifyTotp_(secret, supplied, nowMs) {
-  if (!/^\d{6}$/.test(String(supplied || ''))) return false;
+function matchingTotpCounter_(secret, supplied, nowMs) {
+  if (!/^\d{6}$/.test(String(supplied || ''))) return null;
   var counter = Math.floor((nowMs === undefined ? Date.now() : nowMs) / 30000);
   for (var drift = -1; drift <= 1; drift += 1) {
-    if (constantTimeEqual_(totpCode_(secret, counter + drift), supplied)) return true;
+    var candidate = counter + drift;
+    if (constantTimeEqual_(totpCode_(secret, candidate), supplied)) return candidate;
   }
-  return false;
+  return null;
+}
+
+function verifyTotp_(secret, supplied, nowMs) {
+  return matchingTotpCounter_(secret, supplied, nowMs) !== null;
 }
 
 function operationAuthenticateAdmin_(payload) {
@@ -851,22 +1113,18 @@ function operationAuthenticateAdmin_(payload) {
   }
   var identity = JSON.parse(response.getContentText());
   var clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_ADMIN_CLIENT_ID');
+  var configuration = adminConfiguration_();
   var email = String(identity.email || '').trim().toLowerCase();
-  var allowlist = (PropertiesService.getScriptProperties().getProperty('ADMIN_EMAILS') || '')
-    .split(',').map(function (value) { return value.trim().toLowerCase(); }).filter(Boolean);
-  if (!clientId || identity.aud !== clientId || String(identity.email_verified) !== 'true' ||
-      Number(identity.exp) * 1000 <= Date.now() || allowlist.indexOf(email) === -1) {
+  var issuer = String(identity.iss || '');
+  if (!clientId || identity.aud !== clientId ||
+      (issuer !== 'accounts.google.com' && issuer !== 'https://accounts.google.com') ||
+      String(identity.email_verified) !== 'true' || Number(identity.exp) * 1000 <= Date.now() ||
+      configuration.emails.indexOf(email) === -1) {
     throw domainError_('Google account is not authorized', 'forbidden', 403);
   }
-  var secrets;
-  try {
-    secrets = JSON.parse(PropertiesService.getScriptProperties().getProperty('ADMIN_TOTP_SECRETS_JSON') || '{}');
-  } catch (error) {
-    throw domainError_('ADMIN_TOTP_SECRETS_JSON is invalid', 'configuration_error', 500);
-  }
-  if (!secrets[email] || !verifyTotp_(secrets[email], payload.twoFactorCode)) {
-    throw domainError_('Two-factor code is invalid', 'admin_two_factor_invalid', 403);
-  }
+  // doPost already holds the shared script lock, so this replay/rate-limit
+  // update is atomic with the admin authentication audit below.
+  authenticateAdminTotpForEmail_(email, payload.twoFactorCode);
   appendAudit_({
     entityType: 'admin_session', entityId: email, action: 'admin.authenticated',
     actor: { type: 'admin', id: email }, before: null, after: { email: email }

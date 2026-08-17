@@ -4,7 +4,7 @@
 
 ## 架構與責任
 
-- **D1 `DB`**：OAuth state/nonce、session、一次性短效 deck token、LINE `webhookEventId` 去重。
+- **D1 `DB`**：OAuth state/nonce、session、一次性短效 deck token，以及可重試的 LINE webhook 工作佇列。
 - **R2 `DECKS`**：受保護 Pitch Deck；物件不公開，僅由 Worker 串流。
 - **Apps Script**：會員、專案、認購、管理儀表板等營運資料來源。
 - **Worker**：來源白名單、credentialed CORS、可信 `Origin` + session 專屬 `X-CSRF-Token`、角色 gate、簽章與秘密管理。
@@ -66,7 +66,7 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | `POST /api/auth/admin` Google + 2FA | `authenticateAdmin` | Worker internal/service |
 | Deck permission check | `authorizeDeck` | Worker internal, authenticated |
 | Successful deck stream audit | `deckDownloadAudit` | Worker internal, background |
-| Verified LINE webhook | `webhookEvent` once per new event | Worker internal/service |
+| Verified LINE webhook | `webhookEvent`，成功後才標記 delivered | Worker internal/service |
 
 每個 `payloadJson` 都含 Worker 產生的 `context`（role、actorId、memberId、requestId），再依 operation 加入明確欄位。Apps Script 不得相信瀏覽器自行提供的會員或角色欄位。
 
@@ -74,9 +74,13 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 
 1. `GET /api/auth/line` 建立隨機 state + nonce，hash state 後存入 D1，導向 LINE。
 2. callback 原子消耗 state，向 LINE token endpoint 換 token，再呼叫官方 `/oauth2/v2.1/verify` 並提交 nonce。
-3. Worker 查 `/friendship/v1/status`，建立 8 小時 D1 session；`GET /api/auth/me` 回 `data.csrfToken`，登入後 mutation 必須傳 `X-CSRF-Token`。
+3. Worker 查 `/friendship/v1/status`，並以 `upsertLineMember` 取得非空 `memberId` 後才建立 8 小時 D1 session；解析失敗時 fail closed。`GET /api/auth/me` 回 `data.csrfToken`，登入後 mutation 必須傳 `X-CSRF-Token`。
 4. cookie 固定 `__Host-`、`HttpOnly`、`Secure`。GitHub Pages → `workers.dev` 是 cross-site，需 `COOKIE_SAME_SITE=None`；正式環境強烈建議把 Worker 掛在網站同站 custom domain，改為 `Lax`。
-5. webhook 對最多 2 MB 的原始 bytes 驗 `x-line-signature`。成功立即回 `200`，D1 去重及最小必要事件欄位轉送由 `ctx.waitUntil()` 完成；一般 JSON 上限 64 KB。
+5. webhook 對最多 2 MB 的原始 bytes 驗 `x-line-signature`。成功立即回 `200`，D1 僅保存最小必要事件欄位、狀態、嘗試次數與下次嘗試時間；首次轉送由 `ctx.waitUntil()` 執行，之後由每 5 分鐘 Cron 重試，最多 3 次。已成功事件保持去重，30 天後由排程清理；一般 JSON 上限 64 KB。
+
+## 管理員導向
+
+`ADMIN_DASHBOARD_URL` 是非機密設定，正式部署時必須填入已部署 Apps Script Web App 的 `/exec` URL。預設保留空字串，避免錯誤導向 GitHub Pages 的 live-mode admin redirect loop。`GET /api/config` 與成功的 `POST /api/auth/admin` 都會回 `adminDashboardUrl`；尚未設定時為 `null`，前端不得自動導向。
 
 ## Secrets 與設定
 
@@ -107,3 +111,5 @@ npx wrangler deploy --dry-run --config cloudflare/wrangler.jsonc
 ```
 
 正式建立資源後，把 placeholder D1 UUID 換成實際 binding ID，再執行 migration 與部署。
+
+`wrangler.jsonc` 已設定 `*/5 * * * *` Cron。部署後請在 Cloudflare Dashboard 確認 Cron Trigger 存在，並用一筆刻意失敗的測試 webhook 驗證 D1 狀態依序為 `retry`、`delivered` 或第三次後 `failed`。

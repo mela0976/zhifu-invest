@@ -153,6 +153,12 @@ function deriveAllocationState_(amounts) {
 function hasProjectAccess_(member, project) {
   if (!member || !project || member.membershipState !== 'active') return false;
   if (member.qualificationState !== 'approved') return false;
+  var approval = member.qualificationApproval || {};
+  var now = Date.now();
+  var approvedAtMs = Date.parse(String(approval.approvedAt || ''));
+  var expiryMs = Date.parse(String(approval.expiresAt || ''));
+  if (!Number.isFinite(approvedAtMs) || approvedAtMs > now + 5 * 60 * 1000 ||
+      !Number.isFinite(expiryMs) || expiryMs <= now || expiryMs <= approvedAtMs) return false;
   var direct = (member.projectAccess || []).indexOf(project.id) !== -1;
   var allowlisted = (project.memberAllowlist || []).indexOf(member.id) !== -1;
   return direct || allowlisted;
@@ -213,11 +219,18 @@ function assertRole_(context, allowedRoles) {
   if (allowedRoles.indexOf(role) === -1) {
     throw domainError_('This operation is not available for role ' + role, 'forbidden', 403);
   }
+  if ((role === 'member' || role === 'qualified') && (!context || !context.memberId)) {
+    throw domainError_('Member identity is not linked', 'identity_not_linked', 403);
+  }
   return role;
 }
 
 function assertOwnMemberScope_(context, requestedMemberId) {
   var role = assertRole_(context, ['member', 'qualified', 'admin', 'service']);
+  if ((role === 'member' || role === 'qualified') &&
+      (!context.memberId || !requestedMemberId)) {
+    throw domainError_('Member identity is not linked', 'identity_not_linked', 403);
+  }
   if (role !== 'admin' && role !== 'service' && context.memberId !== requestedMemberId) {
     throw domainError_('Member records are private', 'forbidden', 403);
   }
@@ -227,6 +240,9 @@ function createSubscriptionRecord_(input, now) {
   var requestedAmountTwd = normalizeTwd_(input.requestedAmountTwd, 'requestedAmountTwd');
   if (requestedAmountTwd <= 0) {
     throw domainError_('requestedAmountTwd must be greater than zero', 'invalid_amount');
+  }
+  if (input.riskAcknowledged !== true || !input.riskAcknowledgedAt || !input.riskDisclosureVersion) {
+    throw domainError_('Risk acknowledgement, timestamp and disclosure version are required', 'risk_acknowledgement_required', 409);
   }
   return {
     id: input.id,
@@ -243,6 +259,9 @@ function createSubscriptionRecord_(input, now) {
     receivedAmountTwd: 0,
     allocatedAmountTwd: 0,
     refundedAmountTwd: 0,
+    riskAcknowledged: true,
+    riskAcknowledgedAt: input.riskAcknowledgedAt,
+    riskDisclosureVersion: input.riskDisclosureVersion,
     partnerApproval: null,
     createdAt: now,
     updatedAt: now
@@ -296,6 +315,10 @@ function updateSubscriptionRecord_(current, patch, now) {
   if (patch.allocationState !== undefined && patch.allocationState !== allocationState) {
     throw domainError_('allocationState does not match the amount ledger', 'state_amount_mismatch', 409);
   }
+  // A derived state is still a workflow transition. Checking it here prevents
+  // amount edits from silently reversing paid -> unpaid or final -> pending.
+  assertTransition_('funding', current.fundingState, fundingState);
+  assertTransition_('allocation', current.allocationState, allocationState);
   next.fundingState = fundingState;
   next.allocationState = allocationState;
   next.updatedAt = now;
@@ -322,15 +345,26 @@ function sanitizeMemberForSelf_(member) {
   };
 }
 
-function assertQualificationEvidence_(state, approval) {
+function assertQualificationEvidence_(state, approval, nowMs) {
   if (state !== 'approved') return null;
   if (!approval || !approval.approver || !approval.approvedAt || !approval.reference) {
     throw domainError_('Qualification approval evidence is required', 'approval_required', 409);
   }
+  var now = nowMs === undefined ? Date.now() : nowMs;
+  var approvedAt = assertRequiredString_(approval.approvedAt, 'qualificationApproval.approvedAt', 60);
+  var approvedAtMs = Date.parse(approvedAt);
+  if (!Number.isFinite(approvedAtMs) || approvedAtMs > now + 5 * 60 * 1000) {
+    throw domainError_('Qualification approval time is invalid or in the future', 'invalid_qualification_approval_time', 409);
+  }
+  var expiresAt = assertRequiredString_(approval.expiresAt, 'qualificationApproval.expiresAt', 60);
+  var expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now || expiresAtMs <= approvedAtMs) {
+    throw domainError_('Qualification expiry must be a valid future date', 'invalid_qualification_expiry', 409);
+  }
   return {
     approver: assertRequiredString_(approval.approver, 'qualificationApproval.approver', 200),
-    approvedAt: assertRequiredString_(approval.approvedAt, 'qualificationApproval.approvedAt', 60),
+    approvedAt: new Date(approvedAtMs).toISOString(),
     reference: assertRequiredString_(approval.reference, 'qualificationApproval.reference', 200),
-    expiresAt: normalizeOptionalString_(approval.expiresAt, 60)
+    expiresAt: new Date(expiresAtMs).toISOString()
   };
 }

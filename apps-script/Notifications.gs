@@ -28,6 +28,10 @@ var ZF_NOTIFICATION_COPY = Object.freeze({
   bulk_announcement: '致富投資會員中心有新的服務公告，請登入查看。'
 });
 
+// One initial delivery plus three retries. The fourth failure is retained for
+// manual follow-up instead of looping indefinitely.
+var ZF_NOTIFICATION_MAX_ATTEMPTS = 4;
+
 function notificationPolicyForEvent_(eventType) {
   var policy = ZF_NOTIFICATION_POLICY[eventType];
   if (!policy) throw domainError_('Unknown notification event: ' + eventType, 'invalid_notification');
@@ -170,7 +174,7 @@ function processNotificationQueue_(limit) {
       summary.sent += 1;
     } catch (error) {
       next.lastError = (error.code || 'line_push_failed') + ': ' + error.message;
-      if (next.attemptCount >= 3) {
+      if (next.attemptCount >= ZF_NOTIFICATION_MAX_ATTEMPTS) {
         next.state = 'failed';
         next.nextAttemptAt = '';
         summary.failed += 1;

@@ -8,6 +8,21 @@ const root = path.resolve(__dirname, '..');
 for (const file of fs.readdirSync(root).filter((name) => name.endsWith('.gs'))) {
   new vm.Script(fs.readFileSync(path.join(root, file), 'utf8'), { filename: file });
 }
+
+function propertyStore(map) {
+  return {
+    getProperty(key) { return map.has(key) ? map.get(key) : null; },
+    setProperty(key, value) { map.set(key, String(value)); return this; },
+    deleteProperty(key) { map.delete(key); return this; },
+  };
+}
+
+const scriptPropertyMap = new Map();
+const userPropertyMap = new Map();
+const lockEvents = [];
+let activeEmail = 'admin1@example.com';
+let uuidCounter = 0;
+const projectTriggers = [];
 const sandbox = {
   console,
   Date,
@@ -19,16 +34,58 @@ const sandbox = {
   Array,
   Boolean,
   Error,
+  encodeURIComponent,
   Utilities: {
     Charset: { UTF_8: 'UTF-8' },
+    DigestAlgorithm: { SHA_256: 'SHA_256' },
     computeHmacSha256Signature(value, secret) {
       return [...crypto.createHmac('sha256', secret).update(value, 'utf8').digest()];
     },
+    computeHmacSha1Signature(value, secret) {
+      return [...crypto.createHmac('sha1', Buffer.from(secret)).update(Buffer.from(value)).digest()];
+    },
+    computeDigest(algorithm, value) {
+      assert.equal(algorithm, 'SHA_256');
+      return [...crypto.createHash('sha256').update(String(value), 'utf8').digest()];
+    },
     base64Encode(bytes) { return Buffer.from(bytes).toString('base64'); },
+    getUuid() { uuidCounter += 1; return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, '0')}`; },
+    formatDate() { return '20260818-120000'; },
+  },
+  PropertiesService: {
+    getScriptProperties() { return propertyStore(scriptPropertyMap); },
+    getUserProperties() { return propertyStore(userPropertyMap); },
+  },
+  Session: {
+    getActiveUser() { return { getEmail() { return activeEmail; } }; },
+    getEffectiveUser() { return { getEmail() { return activeEmail; } }; },
+  },
+  LockService: {
+    getScriptLock() {
+      return {
+        waitLock() { lockEvents.push('locked'); },
+        releaseLock() { lockEvents.push('released'); },
+      };
+    },
+  },
+  SpreadsheetApp: { flush() { lockEvents.push('flushed'); } },
+  ScriptApp: {
+    getProjectTriggers() { return projectTriggers.slice(); },
+    newTrigger(handler) {
+      return {
+        timeBased() { return this; },
+        everyMinutes(minutes) { assert.equal(minutes, 5); return this; },
+        create() {
+          const trigger = { getHandlerFunction() { return handler; } };
+          projectTriggers.push(trigger);
+          return trigger;
+        },
+      };
+    },
   },
 };
 vm.createContext(sandbox);
-for (const file of ['Domain.gs', 'Gateway.gs', 'Notifications.gs']) {
+for (const file of ['Domain.gs', 'Gateway.gs', 'Store.gs', 'Notifications.gs', 'Code.gs']) {
   vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), sandbox, { filename: file });
 }
 
@@ -63,6 +120,12 @@ test('gateway rejects expired and tampered envelopes', () => {
   assert.throws(() => sandbox.verifyGatewayEnvelope_(envelope, 'x'.repeat(32), Number(envelope.timestamp) + 300001), /expired/i);
 });
 
+test('store flushes spreadsheet writes before releasing the script lock', () => {
+  lockEvents.length = 0;
+  assert.equal(sandbox.withStoreLock_(() => { lockEvents.push('write'); return 'ok'; }), 'ok');
+  assert.deepEqual(lockEvents, ['locked', 'write', 'flushed', 'released']);
+});
+
 test('five TWD ledgers enforce financial invariants', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(sandbox.validateAmounts_({
     requestedAmountTwd: 1000000, approvedAmountTwd: 900000, receivedAmountTwd: 700000,
@@ -81,9 +144,28 @@ test('five TWD ledgers enforce financial invariants', () => {
   }), /Allocated amount/);
 });
 
+test('derived amount states cannot reverse paid or final workflows', () => {
+  const current = sandbox.createSubscriptionRecord_({
+    id: 's-amount', memberId: 'm-1', projectId: 'p-1', requestedAmountTwd: 100,
+    riskAcknowledged: true, riskAcknowledgedAt: '2026-08-18T00:00:00.000Z', riskDisclosureVersion: 'test-v1',
+  }, '2026-08-18T00:00:00.000Z');
+  const settled = sandbox.updateSubscriptionRecord_(current, {
+    approvedAmountTwd: 100, receivedAmountTwd: 100, allocatedAmountTwd: 100,
+  }, '2026-08-18T01:00:00.000Z');
+  assert.equal(settled.fundingState, 'paid');
+  assert.equal(settled.allocationState, 'final');
+  assert.throws(() => sandbox.updateSubscriptionRecord_(settled, {
+    receivedAmountTwd: 0, allocatedAmountTwd: 0,
+  }, '2026-08-18T02:00:00.000Z'), /paid to unpaid/i);
+  assert.throws(() => sandbox.updateSubscriptionRecord_(settled, {
+    allocatedAmountTwd: 0,
+  }, '2026-08-18T02:00:00.000Z'), /final to pending/i);
+});
+
 test('subscription state is independent and approval needs partner evidence', () => {
   const current = sandbox.createSubscriptionRecord_({
     id: 's-1', memberId: 'm-1', projectId: 'p-1', requestedAmountTwd: 1000000,
+    riskAcknowledged: true, riskAcknowledgedAt: '2026-08-18T00:00:00.000Z', riskDisclosureVersion: 'test-v1',
   }, '2026-08-18T00:00:00.000Z');
   const confirmed = sandbox.updateSubscriptionRecord_(current, {
     subscriptionState: 'operations_confirmed', approvedAmountTwd: 1000000,
@@ -98,16 +180,96 @@ test('subscription state is independent and approval needs partner evidence', ()
   assert.equal(approved.fundingState, 'unpaid');
 });
 
-test('role and per-project rules never leak protected project fields', () => {
+test('qualification evidence requires valid chronology and an unexpired end date', () => {
+  const now = Date.parse('2026-08-18T12:00:00.000Z');
+  const base = { approver: 'Real licensed approver', approvedAt: '2026-08-18T10:00:00.000Z', reference: 'Q-100', expiresAt: '2027-08-18T00:00:00.000Z' };
+  const valid = sandbox.assertQualificationEvidence_('approved', base, now);
+  assert.equal(valid.expiresAt, '2027-08-18T00:00:00.000Z');
+  assert.throws(() => sandbox.assertQualificationEvidence_('approved', { ...base, approvedAt: 'not-a-date' }, now), /approval time/i);
+  assert.throws(() => sandbox.assertQualificationEvidence_('approved', { ...base, approvedAt: '2026-08-18T12:06:00.000Z' }, now), /future/i);
+  assert.throws(() => sandbox.assertQualificationEvidence_('approved', { ...base, expiresAt: '' }, now), /expiresAt|required/i);
+  assert.throws(() => sandbox.assertQualificationEvidence_('approved', { ...base, expiresAt: '2026-08-18T11:59:59.000Z' }, now), /future date/i);
+  assert.throws(() => sandbox.assertQualificationEvidence_('approved', { ...base, approvedAt: '2027-08-18T00:00:00.000Z', expiresAt: '2026-08-19T00:00:00.000Z' }, Date.parse('2027-08-18T00:00:00.000Z')), /future date/i);
+});
+
+test('member roles fail closed without identity and expired qualification cannot unlock projects', () => {
   const project = { id: 'p-1', slug: 'demo', demo: true, displayName: 'DEMO', publicVisibility: 'anonymous',
     industry: 'bio', stage: 'seed', region: 'TW', summary: 'public', highlights: [], updatedAt: 'now',
     companyName: 'SECRET COMPANY', targetAmountTwd: 100, minimumAmountTwd: 10, incrementAmountTwd: 10,
     memberAllowlist: ['m-2'], reports: [], risks: [], useOfFunds: [], deck: { id: 'd-1' } };
-  const denied = { id: 'm-1', membershipState: 'active', qualificationState: 'approved', projectAccess: [] };
-  const allowed = { id: 'm-1', membershipState: 'active', qualificationState: 'approved', projectAccess: ['p-1'] };
+  const denied = { id: 'm-1', membershipState: 'active', qualificationState: 'approved', projectAccess: ['p-1'], qualificationApproval: { approvedAt: '2019-01-01T00:00:00.000Z', expiresAt: '2020-01-01T00:00:00.000Z' } };
+  const allowed = { id: 'm-1', membershipState: 'active', qualificationState: 'approved', projectAccess: ['p-1'], qualificationApproval: { approvedAt: '2026-01-01T00:00:00.000Z', expiresAt: '2099-01-01T00:00:00.000Z' } };
   assert.equal(sandbox.projectViewForActor_(project, denied, 'qualified').protected, undefined);
   assert.equal(sandbox.projectViewForActor_(project, allowed, 'qualified').protected.companyName, 'SECRET COMPANY');
+  assert.throws(() => sandbox.assertOwnMemberScope_({ role: 'member', memberId: '' }, ''), (error) => error.code === 'identity_not_linked');
+  assert.throws(() => sandbox.assertOwnMemberScope_({ role: 'qualified' }, undefined), (error) => error.code === 'identity_not_linked');
+  assert.throws(() => sandbox.assertRole_({ role: 'member' }, ['member']), (error) => error.code === 'identity_not_linked');
   assert.throws(() => sandbox.assertOwnMemberScope_({ role: 'member', memberId: 'm-1' }, 'm-2'), /private/i);
+});
+
+test('activation cannot trust the client LINE friendship checkbox', () => {
+  const originalFind = sandbox.storeFindById_;
+  sandbox.storeFindById_ = () => ({ id: 'm-1', lineUserId: 'U1', displayName: 'Member', lineFriendshipState: 'not_friend' });
+  try {
+    assert.throws(() => sandbox.operationCreateActivation_({ activation: {
+      fullName: '王小明', phone: '0912345678', sourceCode: 'GROUP-A', sourceName: '社群 A',
+      lineFriendConfirmed: true, privacyConsent: true,
+    } }, { role: 'member', memberId: 'm-1', actorId: 'm-1' }), (error) => error.code === 'line_friendship_required');
+  } finally {
+    sandbox.storeFindById_ = originalFind;
+  }
+});
+
+test('TOTP sessions hash tokens, reject replay, expire, and lock repeated failures', () => {
+  const secrets = {
+    'admin1@example.com': 'JBSWY3DPEHPK3PXP',
+    'admin2@example.com': 'JBSWY3DPEHPK3PXQ',
+  };
+  scriptPropertyMap.set('ADMIN_EMAILS', 'admin1@example.com,admin2@example.com');
+  scriptPropertyMap.set('ADMIN_TOTP_SECRETS_JSON', JSON.stringify(secrets));
+  scriptPropertyMap.delete('ADMIN_AUTH_STATES_JSON');
+  userPropertyMap.clear();
+  activeEmail = 'admin1@example.com';
+  const now = Date.parse('2026-08-18T12:00:00.000Z');
+  const counter = Math.floor(now / 30000);
+  const code = sandbox.totpCode_(secrets[activeEmail], counter);
+  assert.equal(sandbox.authenticateAdminTotpForEmail_(activeEmail, code, now), counter);
+  assert.throws(() => sandbox.authenticateAdminTotpForEmail_(activeEmail, code, now), (error) => error.code === 'admin_two_factor_replayed');
+
+  const session = sandbox.issueAdminSession_({ email: activeEmail }, now);
+  const persisted = userPropertyMap.get('ADMIN_HTML_SESSION_JSON');
+  assert.ok(persisted);
+  assert.ok(!persisted.includes(session.token), 'raw session token must never be persisted server-side');
+  assert.equal(sandbox.assertAdminSession_(session.token, now + 1000).email, activeEmail);
+  assert.throws(() => sandbox.assertAdminSession_(session.token, now + sandbox.ZF_ADMIN_SESSION_TTL_MS + 1), (error) => error.code === 'admin_session_required');
+
+  scriptPropertyMap.delete('ADMIN_AUTH_STATES_JSON');
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    assert.throws(() => sandbox.authenticateAdminTotpForEmail_(activeEmail, '000000', now + attempt), (error) => error.code === 'admin_two_factor_invalid');
+  }
+  assert.throws(() => sandbox.authenticateAdminTotpForEmail_(activeEmail, '000000', now + 5), (error) => error.code === 'admin_two_factor_locked');
+});
+
+test('admin configuration preflight requires at least two allowlisted accounts', () => {
+  const previous = scriptPropertyMap.get('ADMIN_EMAILS');
+  scriptPropertyMap.set('ADMIN_EMAILS', 'admin1@example.com');
+  assert.throws(() => sandbox.adminConfiguration_(), /at least two/i);
+  scriptPropertyMap.set('ADMIN_EMAILS', previous);
+});
+
+test('production preflight reports configuration without secrets and installs one trigger idempotently', () => {
+  scriptPropertyMap.set('SPREADSHEET_ID', 'sheet-1');
+  scriptPropertyMap.set('GATEWAY_SHARED_SECRET', 'g'.repeat(32));
+  scriptPropertyMap.set('LINE_MESSAGING_ACCESS_TOKEN', 'line-token-test-only');
+  scriptPropertyMap.set('MEMBER_APP_BASE_URL', 'https://member.example');
+  projectTriggers.length = 0;
+  const first = sandbox.installNotificationQueueTrigger();
+  const second = sandbox.installNotificationQueueTrigger();
+  assert.equal(first.triggerCreated, true);
+  assert.equal(second.triggerCreated, false);
+  assert.equal(projectTriggers.length, 1);
+  assert.equal(JSON.stringify(second).includes('line-token-test-only'), false);
+  assert.equal(second.administratorCount, 2);
 });
 
 test('notification policy requires manual approval for rejections refunds and bulk', () => {
@@ -122,25 +284,57 @@ test('notification policy requires manual approval for rejections refunds and bu
   }
 });
 
+test('LINE delivery gets three retries before entering the failed queue', () => {
+  const originals = {
+    storeList: sandbox.storeList_, storePut: sandbox.storePut_, linePush: sandbox.linePush_, audit: sandbox.appendAudit_,
+  };
+  let saved;
+  sandbox.storePut_ = (sheet, record) => { saved = record; };
+  sandbox.linePush_ = () => { throw sandbox.domainError_('provider unavailable', 'line_push_failed', 502); };
+  sandbox.appendAudit_ = () => {};
+  try {
+    for (const [priorAttempts, expected] of [[0, 'retry'], [1, 'retry'], [2, 'retry'], [3, 'failed']]) {
+      saved = null;
+      sandbox.storeList_ = () => [{
+        id: 'n-1', state: priorAttempts ? 'retry' : 'queued', attemptCount: priorAttempts,
+        nextAttemptAt: '', updatedAt: '', lineUserId: 'U1', message: '狀態已更新',
+      }];
+      sandbox.processNotificationQueue_(1);
+      assert.equal(saved.state, expected);
+      assert.equal(saved.attemptCount, priorAttempts + 1);
+    }
+  } finally {
+    sandbox.storeList_ = originals.storeList;
+    sandbox.storePut_ = originals.storePut;
+    sandbox.linePush_ = originals.linePush;
+    sandbox.appendAudit_ = originals.audit;
+  }
+});
+
 test('every Worker Apps Script operation is registered by the Apps Script dispatcher', () => {
-  const workerSource = [
-    fs.readFileSync(path.resolve(root, '..', 'cloudflare', 'src', 'index.ts'), 'utf8'),
-    fs.readFileSync(path.resolve(root, '..', 'cloudflare', 'src', 'auth.ts'), 'utf8'),
-  ].join('\n');
+  const workerSource = ['index.ts', 'auth.ts', 'webhook.ts'].map((name) =>
+    fs.readFileSync(path.resolve(root, '..', 'cloudflare', 'src', name), 'utf8')).join('\n');
   const operations = new Set([
     ...[...workerSource.matchAll(/operation:\s*'([A-Za-z][A-Za-z0-9.]*)'/g)].map((match) => match[1]),
+    ...[...workerSource.matchAll(/,\s*'([A-Za-z][A-Za-z0-9.]*)',\s*'(?:public|member|admin)'/g)].map((match) => match[1]),
     ...[...workerSource.matchAll(/callAppsScript(?:<[^>]+>)?\(env,\s*'([A-Za-z][A-Za-z0-9.]*)'/g)].map((match) => match[1]),
   ]);
   const dispatcher = fs.readFileSync(path.join(root, 'Code.gs'), 'utf8');
-  assert.ok(operations.size >= 15, 'expected to discover the Worker operation allowlist');
+  assert.ok(operations.size >= 20, `expected Worker operation allowlist, found ${operations.size}`);
   for (const operation of operations) {
     const escaped = operation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.match(dispatcher, new RegExp(`(?:^|\\s|['"])${escaped}(?:['"])?\\s*:`), `missing Apps Script operation ${operation}`);
   }
 });
 
-test('the Apps Script admin dashboard inline JavaScript parses', () => {
+test('the Apps Script admin dashboard includes TOTP, evidence, access and valid JavaScript', () => {
   const html = fs.readFileSync(path.join(root, 'Admin.html'), 'utf8');
+  for (const marker of ['adminAuthenticateTotp', 'sessionStorage', 'qualificationExpiresAt', 'projectAccess', 'activationEvidence', 'lineFriendshipState', 'sourceCode', 'consentedAt']) {
+    assert.match(html, new RegExp(marker));
+  }
+  assert.match(html, /qualificationState==='approved'[\s\S]*qualificationExpiresAt/);
+  assert.doesNotMatch(html, /onclick="(?:editMember|editSubscription|approveNotification)\('\$\{esc\(/);
+  assert.match(html, /function jsArg\(value\)/);
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
   assert.equal(scripts.length, 1);
   new vm.Script(scripts[0], { filename: 'Admin.html:inline-script' });

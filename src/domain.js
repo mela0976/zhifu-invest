@@ -126,6 +126,8 @@ export function deriveAllocationState(amounts) {
 export function canAccessProtectedProject(member, project) {
   if (!member || member.membershipState !== 'active') return false;
   if (member.qualificationState !== 'approved') return false;
+  const qualificationExpiresAt = Date.parse(member.qualificationApproval?.expiresAt || '');
+  if (!Number.isFinite(qualificationExpiresAt) || qualificationExpiresAt <= Date.now()) return false;
   const directAccess = member.projectAccess?.includes(project.id);
   const allowlisted = project.memberAllowlist?.includes(member.id);
   return Boolean(directAccess || allowlisted);
@@ -142,7 +144,12 @@ export function memberProject(project, member) {
   return { ...safe, protected: project.protected, access: 'qualified' };
 }
 
-export function createSubscriptionRecord({ id, memberId, projectId, requestedAmountTwd, now }) {
+export function createSubscriptionRecord({
+  id, memberId, projectId, requestedAmountTwd, riskAcknowledged, riskAcknowledgedAt, riskDisclosureVersion, now,
+}) {
+  if (riskAcknowledged !== true || !riskAcknowledgedAt || !riskDisclosureVersion) {
+    throw new DomainError('Risk acknowledgement, timestamp and disclosure version are required', 'risk_acknowledgement_required', 409);
+  }
   return {
     id,
     memberId,
@@ -157,6 +164,9 @@ export function createSubscriptionRecord({ id, memberId, projectId, requestedAmo
     receivedAmountTwd: 0,
     allocatedAmountTwd: 0,
     refundedAmountTwd: 0,
+    riskAcknowledged: true,
+    riskAcknowledgedAt,
+    riskDisclosureVersion,
     partnerApproval: null,
     createdAt: now,
     updatedAt: now,
@@ -187,6 +197,18 @@ export function updateSubscriptionRecord(current, patch, now) {
   if (next.subscriptionState === 'approved' && !next.partnerApproval) {
     throw new DomainError('Partner approval evidence is required before approval', 'approval_required', 409);
   }
+  const derivedFundingState = deriveFundingState(next);
+  const derivedAllocationState = deriveAllocationState(next);
+  if (patch.fundingState !== undefined && patch.fundingState !== derivedFundingState) {
+    throw new DomainError('fundingState does not match the amount ledger', 'state_amount_mismatch', 409);
+  }
+  if (patch.allocationState !== undefined && patch.allocationState !== derivedAllocationState) {
+    throw new DomainError('allocationState does not match the amount ledger', 'state_amount_mismatch', 409);
+  }
+  assertTransition('funding', current.fundingState, derivedFundingState);
+  assertTransition('allocation', current.allocationState, derivedAllocationState);
+  next.fundingState = derivedFundingState;
+  next.allocationState = derivedAllocationState;
   next.updatedAt = now;
   return next;
 }
@@ -196,6 +218,7 @@ export function redactMember(member) {
   return {
     id: member.id,
     displayName: member.displayName,
+    legalName: member.legalName || '',
     phoneMasked: tail ? `09**-***-${tail}` : '',
     membershipState: member.membershipState,
     qualificationState: member.qualificationState,

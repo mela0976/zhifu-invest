@@ -7,5 +7,6 @@ independent HMAC oracle. They do not access a real Google Sheet or LINE account.
 node apps-script/tests/run-tests.cjs
 ```
 
-Live acceptance still requires both Apps Script deployments, a test Google
-account in `ADMIN_EMAILS`, a real LINE test user, and a test R2 deck object.
+Live acceptance still requires both fixed-version deployments from the same Apps
+Script project, two configured `ADMIN_EMAILS` accounts with TOTP, a real LINE test
+user that is an OA friend, and a test R2 deck object.

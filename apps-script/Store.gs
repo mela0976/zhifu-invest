@@ -18,6 +18,7 @@ var ZF_SCHEMA = Object.freeze({
     'id', 'demo', 'memberId', 'projectId', 'membershipState', 'qualificationState',
     'subscriptionState', 'fundingState', 'allocationState', 'requestedAmountTwd',
     'approvedAmountTwd', 'receivedAmountTwd', 'allocatedAmountTwd', 'refundedAmountTwd',
+    'riskAcknowledged', 'riskAcknowledgedAt', 'riskDisclosureVersion',
     'partnerApprover', 'partnerApprovedAt', 'partnerReference', 'createdAt', 'updatedAt'
   ],
   Bookings: [
@@ -26,7 +27,8 @@ var ZF_SCHEMA = Object.freeze({
   ],
   Activations: [
     'id', 'demo', 'memberId', 'lineUserId', 'fullName', 'phone', 'sourceCode',
-    'sourceName', 'identityNote', 'lineFriendConfirmed', 'privacyConsent', 'consentedAt',
+    'sourceName', 'identityNote', 'lineFriendConfirmed', 'lineFriendshipState',
+    'privacyConsent', 'consentedAt',
     'state', 'createdAt', 'updatedAt'
   ],
   Notifications: [
@@ -47,7 +49,13 @@ function withStoreLock_(callback) {
   try {
     return callback();
   } finally {
-    lock.releaseLock();
+    try {
+      // Apps Script batches Spreadsheet writes. Commit them while the script
+      // lock is still held so the next execution cannot observe stale rows.
+      SpreadsheetApp.flush();
+    } finally {
+      lock.releaseLock();
+    }
   }
 }
 

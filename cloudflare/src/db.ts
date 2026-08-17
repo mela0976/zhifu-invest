@@ -5,6 +5,7 @@ export const SESSION_COOKIE = '__Host-zhifu_session';
 export const SESSION_TTL_SECONDS = 8 * 60 * 60;
 export const DECK_TOKEN_TTL_SECONDS = 5 * 60;
 export const OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const WEBHOOK_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 type SessionRow = {
   id: string;
@@ -43,6 +44,15 @@ export async function getSession(request: Request, env: GatewayEnv): Promise<Ses
       WHERE id = ?1 AND expires_at > ?2`,
   ).bind(id, now).first<SessionRow>();
   if (!row) return null;
+  if (row.role === 'member' && !row.member_id?.trim()) {
+    await env.DB.prepare('DELETE FROM sessions WHERE id = ?1').bind(id).run();
+    console.error(JSON.stringify({
+      level: 'error',
+      event: 'invalid_member_session_removed',
+      sessionId: id,
+    }));
+    return null;
+  }
 
   await env.DB.prepare('UPDATE sessions SET last_seen_at = ?1 WHERE id = ?2')
     .bind(now, id).run();
@@ -69,9 +79,11 @@ export async function deleteSession(request: Request, env: GatewayEnv): Promise<
 
 export async function cleanupExpired(env: GatewayEnv): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  const webhookCutoff = Date.now() - WEBHOOK_RETENTION_MS;
   await env.DB.batch([
     env.DB.prepare('DELETE FROM oauth_states WHERE expires_at <= ?1').bind(now),
     env.DB.prepare('DELETE FROM deck_tokens WHERE expires_at <= ?1').bind(now),
     env.DB.prepare('DELETE FROM sessions WHERE expires_at <= ?1').bind(now),
+    env.DB.prepare('DELETE FROM webhook_events WHERE received_at <= ?1').bind(webhookCutoff),
   ]);
 }

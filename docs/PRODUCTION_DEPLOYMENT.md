@@ -63,19 +63,22 @@ npx wrangler deploy --config cloudflare/wrangler.jsonc
 
 網域、允許 origin 與 `COOKIE_SAME_SITE` 放 Wrangler vars；channel secret、access token 或 shared secret 絕不得提交 GitHub。上述其他值雖可公開，仍以 `wrangler secret put` 注入，避免直接修改 repo。Worker 使用 D1 保存一次性 OAuth state、8 小時 session、5 分鐘 deck token 與 webhook event ID；Pitch Deck 由 R2 binding 串流回傳。
 
+把 `ADMIN_DASHBOARD_URL` 設成下節 Admin deployment 的正式 `/exec` HTTPS URL；未設定時正式 Pages 後台會 fail closed。Worker 的 Cron 每 5 分鐘重試尚未送達 Apps Script 的 LINE webhook，最多 3 次並保留 30 天狀態。
+
 Cloudflare 建議新 Worker 使用目前 compatibility date、生成 binding types、以 bindings 存取平台資源並將非同步 webhook 工作交給 `ctx.waitUntil()`；本專案依此配置。[Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/)
 
 ## 5. Apps Script 與 Google Sheets
 
-1. 由營運 Google 帳號建立一份空白 Spreadsheet，以及 Gateway／Admin 兩個 standalone Apps Script project。
-2. 兩個 project 都加入 `apps-script/` 原始碼；先在 Gateway project 執行一次 `setupWorkbook()`，再把同一 `SPREADSHEET_ID` 複製到 Admin project。
-3. Gateway Script Properties 設定 `GATEWAY_SHARED_SECRET`、`LINE_MESSAGING_ACCESS_TOKEN`、`MEMBER_APP_BASE_URL`；Admin project 設定 `ADMIN_EMAILS`。若啟用 Worker 管理登入，再設定 `GOOGLE_ADMIN_CLIENT_ID` 與 `ADMIN_TOTP_SECRETS_JSON`。
-4. Gateway deployment 採 `USER_DEPLOYING`／`ANYONE_ANONYMOUS`，URL 只交給 Worker，所有請求仍須通過 signed envelope。
-5. 雪芬姐 Admin deployment 採 `USER_ACCESSING`／`ANYONE`，每次 `doGet` 與 `adminRpc` 都檢查 `ADMIN_EMAILS`；Google 帳號必須由帳號／Workspace 政策開啟兩步驟驗證。
-6. GitHub Pages 的 `admin.html` 僅供本機 Demo；正式雪芬姐儀表板使用 Admin Apps Script deployment URL。
-7. production 不執行 `seedDemoData()`。
+1. 由營運 Google 帳號建立一份空白 Spreadsheet，以及**一個** standalone Apps Script project；所有 `apps-script/` 原始碼與 Script Properties 只維護一份。
+2. 執行一次 `setupWorkbook()`，設定 `GATEWAY_SHARED_SECRET`、`LINE_MESSAGING_ACCESS_TOKEN`、`MEMBER_APP_BASE_URL`、至少兩人的 `ADMIN_EMAILS` 與每人不同的 `ADMIN_TOTP_SECRETS_JSON`。
+3. 在同一 project 建立 Gateway 固定版本 deployment：`USER_DEPLOYING`／`ANYONE_ANONYMOUS`。URL 只交給 Worker，所有請求仍須通過 signed envelope。
+4. 由同一 project 的另一個固定版本建立 Admin deployment：`USER_ACCESSING`／`ANYONE`。不要使用 Head deployment；兩個 entry point 共享 ScriptLock、nonce、TOTP replay counter、Sheet 與 audit。
+5. 雪芬姐與備援管理員先通過 Google `ADMIN_EMAILS`，再輸入自有 TOTP；8 小時後台 session 的原始 token 只在該分頁的 `sessionStorage`，伺服器只存雜湊與期限。Google 帳號本身也必須開啟兩步驟驗證。
+6. 執行 `productionPreflight()`，確認兩名管理員、每人 TOTP、gateway secret 與 spreadsheet 設定均存在；安裝唯一一個 `processNotificationQueue` 5 分鐘 trigger。
+7. GitHub Pages 的 `admin.html` 僅供本機 Demo；正式雪芬姐儀表板由 Worker 的 `ADMIN_DASHBOARD_URL` 導向 Admin Apps Script `/exec`。
+8. production 不執行 `seedDemoData()`；完整 deployment 操作與 manifest 切換方式見 `apps-script/README.md`。
 
-Apps Script `doPost(e)` 只提供 request body 等 event fields，沒有可依賴的自訂 request header，因此 Worker 簽章放在 JSON body；所有 Sheet 寫入使用 `LockService.getScriptLock()` 防止同時確認覆蓋。[Apps Script Web Apps](https://developers.google.com/apps-script/guides/web)、[LockService](https://developers.google.com/apps-script/reference/lock/lock-service)
+Apps Script `doPost(e)` 只提供 request body 等 event fields，沒有可依賴的自訂 request header，因此 Worker 簽章放在 JSON body；所有 Sheet 寫入使用同一 project 的 `LockService.getScriptLock()`，並在釋放前 `SpreadsheetApp.flush()`。[Apps Script Web Apps](https://developers.google.com/apps-script/guides/web)、[deployment entry point](https://developers.google.com/apps-script/api/reference/rest/v1/projects.deployments)、[LockService](https://developers.google.com/apps-script/reference/lock/lock-service)
 
 ## 6. GitHub Pages
 
@@ -104,6 +107,7 @@ Pages build 只把這個公開 API origin 寫入 `runtime-config.js`。沒有設
 - Safari iOS／macOS、Chrome Android／Desktop、Edge：callback、cookie、deep link 回原頁、私密模式與網路錯誤。
 - 一般群組與 OpenChat 導流：自助登入、加 OA、提交來源、雪芬姐人工確認；不得宣稱自動匯入群組名單。
 - 兩位會員平行登入：專案、認購、文件與金額互不可見。
+- 兩位管理員：Google allowlist、各自 TOTP、錯誤鎖定、登出與 8 小時到期；任何一人不得共用另一人的 TOTP。
 - 合格投資人＋逐案 allowlist：未通過任一層不得取得保護 payload 或 R2 key。
 - 認購：申請、營運確認、合作方核准、入金、分配、退款五組狀態／金額與 audit。
 - LINE：例行通知自動送達；拒絕、退款、bulk 人工確認；失敗重試 3 次後進待辦。

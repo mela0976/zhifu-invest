@@ -61,7 +61,7 @@ When the repository variable `PUBLIC_API_BASE_URL` points to the production Clou
 
 - Visitor: public educational content and anonymized project teasers.
 - Member: use the Demo member action to see only that member's projects, amounts, timeline, bookings, and secure deck access.
-- 雪芬姐 dashboard: use the Demo admin action to operate confirmations, record external approval references, update the five amount fields, retry notifications, export CSV, and inspect audit history.
+- 雪芬姐 dashboard: use the Demo admin action to operate confirmations, record qualification evidence and per-project access, update the five amount fields, inspect bookings, retry notifications, export CSV, and inspect audit history.
 
 No shared password is embedded in the repository. Demo sign-in calls a local-only endpoint and receives the same signed, HttpOnly session shape used by the LINE provider adapter.
 
@@ -87,6 +87,7 @@ The Docker build runs these boundaries in one Node process for local acceptance.
 - Public analytics must never receive names, phone numbers, LINE user IDs, member IDs, subscription amounts, or document identifiers.
 - Licensed-partner qualification and acceptance happen outside this MVP. The dashboard records the approver, approval time, and reference evidence; it does not create legal approval on its own.
 - Production publication of privacy, risk, AI, membership, and investment language requires review by the licensed partner or counsel.
+- Production admin uses the Apps Script HtmlService deployment with Google allowlist plus a separate TOTP gate. Configure at least two administrators; do not point `ADMIN_DASHBOARD_URL` back to the GitHub Pages Demo admin.
 
 ## Confirmed scope
 

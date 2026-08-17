@@ -1,10 +1,12 @@
 import { api, appUrl } from './api.js';
 import { emptyState, errorState, escapeHtml, formatDate, formatMoney, initShell, openDialog, closeDialog, setButtonBusy, sourceNotice, toast } from './common.js';
 import { statusLabels } from './demo-data.js';
+import { protectedProjectContent } from './project-content.js';
 
 let member = {};
 let projects = [];
 let subscriptions = [];
+let bookings = [];
 let selectedProject = null;
 let submissionKey = null;
 let activeProjectFilter = 'all';
@@ -54,6 +56,11 @@ function subscriptionRecord(item, expanded = true) {
   </article>`;
 }
 
+function reportRegister(reports) {
+  if (!reports.length) return '<p class="micro">目前沒有已核准發布的 AI 或專家報告。</p>';
+  return `<div class="record-list">${reports.map((report) => `<article class="record-card" data-testid="approved-report" data-report-type="${escapeHtml(report.type)}"><div class="record-card__head"><div><span class="mono micro">${escapeHtml(report.id || 'REPORT')}</span><h3>${report.type === 'ai' ? 'AI 增強報告' : '專家審閱報告'}</h3></div><span class="status status--success">已核准</span></div><div class="record-card__body qualification"><dl><dt>版本</dt><dd class="mono">v${escapeHtml(report.version)}</dd><dt>資料基準日</dt><dd>${formatDate(report.basisDate)}</dd><dt>審閱者</dt><dd>${escapeHtml(report.reviewedBy || '尚未登錄')}</dd></dl></div></article>`).join('')}</div>`;
+}
+
 function renderIdentity() {
   const identity = document.querySelector('#member-identity');
   const qualification = member.qualification || {};
@@ -94,12 +101,33 @@ function renderSubscriptions() {
   ].map(([label, value]) => `<div class="amount-ledger__item"><span class="amount-ledger__label">${label}</span><strong class="amount-ledger__value">${formatMoney(value, true)}</strong></div>`).join('');
 }
 
+function renderBookings() {
+  const target = document.querySelector('#member-booking-list');
+  if (!target) return;
+  target.innerHTML = bookings.length ? `<div class="record-list">${bookings.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).map((item) => `<article class="record-card" data-testid="member-booking"><div class="record-card__head"><div><span class="mono micro">${escapeHtml(item.id)}</span><h3>${escapeHtml(item.topic || item.advisorType || '顧問預約')}</h3></div><span class="status" data-status="${escapeHtml(item.status || 'requested')}">${escapeHtml(statusLabel(item.status || 'requested'))}</span></div><div class="record-card__body"><p class="micro">偏好日期：${formatDate(item.preferredDate)}｜${escapeHtml(item.preferredTime || '時段待確認')}</p>${item.notes ? `<p>${escapeHtml(item.notes)}</p>` : ''}</div></article>`).join('')}</div>` : emptyState('目前沒有預約', '從首頁提出顧問預約後，進度會顯示在這裡。');
+}
+
+async function loadBookings() {
+  const target = document.querySelector('#member-booking-list');
+  if (!target) return;
+  try {
+    const result = await api.bookings();
+    bookings = normalizeList(result, 'bookings');
+    renderBookings();
+  } catch (error) {
+    target.innerHTML = errorState('目前無法讀取預約', '預約資料未納入本頁載入條件；其他會員資料不受影響。', 'booking-retry');
+    document.querySelector('#booking-retry')?.addEventListener('click', loadBookings);
+  }
+}
+
 function openProject(id) {
   selectedProject = projects.find((item) => String(item.id) === String(id));
   if (!selectedProject) return;
   document.querySelector('#member-project-dialog-title').textContent = selectedProject.displayName || selectedProject.name;
   const progress = selectedProject.targetAmount ? Math.min(100, Math.round(Number(selectedProject.committedAmount || 0) / Number(selectedProject.targetAmount) * 100)) : 0;
-  document.querySelector('#member-project-dialog-body').innerHTML = `<span class="status status--success">已授權閱覽</span><p class="lede" style="margin-top:18px;font-size:17px">${escapeHtml(selectedProject.summary)}</p><div class="amount-ledger" style="grid-template-columns:1fr 1fr 1fr"><div class="amount-ledger__item"><span class="amount-ledger__label">目標金額</span><strong class="amount-ledger__value">${formatMoney(selectedProject.targetAmount, true)}</strong></div><div class="amount-ledger__item"><span class="amount-ledger__label">目前進度</span><strong class="amount-ledger__value">${progress}%</strong></div><div class="amount-ledger__item"><span class="amount-ledger__label">最低認購</span><strong class="amount-ledger__value">${formatMoney(selectedProject.minimumAmount, true)}</strong></div></div><h3 style="margin-top:24px">主要風險</h3><p class="micro">${escapeHtml(selectedProject.risk || '未上市投資可能損失全部本金，且流動性有限。')}</p><div class="notice" style="margin:20px 0 0">AI 與專家報告分開標示。Demo 報告不構成投資建議，正式版本須保留審閱者與資料基準日。</div>`;
+  const content = protectedProjectContent(selectedProject);
+  const demoLabel = selectedProject.demo || api.isDemo() ? 'DEMO｜' : '';
+  document.querySelector('#member-project-dialog-body').innerHTML = `<span class="status status--success">已授權閱覽</span><p class="lede" style="margin-top:18px;font-size:17px">${escapeHtml(selectedProject.summary)}</p><div class="amount-ledger" style="grid-template-columns:1fr 1fr 1fr"><div class="amount-ledger__item"><span class="amount-ledger__label">目標金額</span><strong class="amount-ledger__value">${formatMoney(selectedProject.targetAmount, true)}</strong></div><div class="amount-ledger__item"><span class="amount-ledger__label">目前進度</span><strong class="amount-ledger__value">${progress}%</strong></div><div class="amount-ledger__item"><span class="amount-ledger__label">最低認購</span><strong class="amount-ledger__value">${formatMoney(selectedProject.minimumAmount, true)}</strong></div></div><section class="qualification" style="margin-top:24px" data-testid="protected-company"><div class="qualification__head"><h3>企業與募資資料</h3><span class="status">${escapeHtml(content.round || '輪次待確認')}</span></div><dl><dt>公司</dt><dd>${escapeHtml(content.companyName || '待核准揭露')}</dd><dt>團隊摘要</dt><dd>${escapeHtml(content.teamSummary || '待核准揭露')}</dd><dt>財務摘要</dt><dd>${escapeHtml(content.financialSummary || '待核准揭露')}</dd><dt>估值註記</dt><dd>${escapeHtml(content.valuationNote || '以合作方正式文件為準')}</dd></dl>${content.useOfFunds.length ? `<h3 style="margin-top:20px">資金用途</h3><ul>${content.useOfFunds.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}</section><h3 style="margin-top:24px">已核准報告</h3>${reportRegister(content.reports)}<h3 style="margin-top:24px">主要風險</h3><p class="micro">${escapeHtml(selectedProject.risk || '未上市投資可能損失全部本金，且流動性有限。')}</p><div class="notice" style="margin:20px 0 0">${demoLabel}AI 與專家報告分開標示；只顯示已核准版本，並保留審閱者與資料基準日。</div>`;
   openDialog(detailDialog);
 }
 
@@ -125,8 +153,9 @@ async function openDeck() {
   setButtonBusy(button, true, '正在取得授權…');
   try {
     const result = await api.deckToken(selectedProject.id);
-    const url = result?.url || result?.downloadUrl || `/api/decks/${encodeURIComponent(result?.token)}`;
-    window.open(url, '_blank', 'noopener');
+    const path = result?.url || result?.downloadUrl || (result?.token ? `/api/decks/${encodeURIComponent(result.token)}` : '');
+    if (!path) throw new Error('文件授權回應缺少下載位置');
+    window.open(api.apiUrl(path), '_blank', 'noopener');
     toast('已建立短效文件授權，下載行為已記錄。');
   } catch (error) {
     toast(`文件尚未開放：${error.message}`, 'error');
@@ -175,6 +204,7 @@ async function loadDashboard() {
     }));
     sourceNotice(result.source, document.querySelector('#member-source'));
     renderIdentity(); renderProjects(); renderSubscriptions();
+    loadBookings();
   } catch (error) {
     if (error.status === 401) { window.location.href = appUrl('/activate.html'); return; }
     document.querySelector('#home-subscription').innerHTML = errorState('無法讀取會員紀錄', '請重新登入或稍後再試。', 'member-retry');

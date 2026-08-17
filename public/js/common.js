@@ -89,7 +89,47 @@ export function bindDialogDismissals() {
   });
 }
 
+export function activationSourceFromUrl(search = '') {
+  const params = new URLSearchParams(String(search || '').replace(/^\?/, ''));
+  const clean = (value, limit) => String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, limit);
+  const first = (names, limit) => clean(names.map((name) => params.get(name)).find(Boolean), limit);
+  return {
+    sourceCode: first(['sourceCode', 'source_code', 'source', 'sc'], 40),
+    sourceName: first(['sourceName', 'source_name', 'group', 'openChat', 'openchat'], 100),
+  };
+}
+
+export function normalizeExternalHttpsUrl(value = '') {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (url.protocol !== 'https:' || url.username || url.password) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+export function resolveAdminDashboardRoute(config = {}, liveApi = false) {
+  if (!liveApi) return { mode: 'local', url: '' };
+  const url = normalizeExternalHttpsUrl(config?.adminDashboardUrl);
+  return url ? { mode: 'redirect', url } : { mode: 'blocked', url: '' };
+}
+
+export function qualificationExpiryIso(value, now = Date.now()) {
+  const expiresAt = new Date(`${String(value || '').trim()}T23:59:59+08:00`);
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Number(now)) return '';
+  return expiresAt.toISOString();
+}
+
+function setDemoControlsVisible(visible) {
+  document.querySelectorAll('[data-demo-login], [data-demo-access]').forEach((element) => {
+    element.hidden = !visible;
+    if ('disabled' in element) element.disabled = !visible;
+  });
+}
+
 export function initShell() {
+  if (api.hasLiveApi()) setDemoControlsVisible(false);
   document.querySelectorAll('a[href^="/api/"]').forEach((link) => {
     link.href = api.apiUrl(link.getAttribute('href'));
   });
@@ -140,6 +180,7 @@ export function initShell() {
   bindDialogDismissals();
   api.detectConfig()
     .then((config) => {
+      setDemoControlsVisible(!api.hasLiveApi() || Boolean(config?.demoMode));
       if (config?.demoMode || api.isDemo()) document.documentElement.dataset.demo = 'true';
       if (config?.staticPreview || api.isStaticPreview()) {
         const strip = document.querySelector('.demo-strip');
@@ -151,7 +192,9 @@ export function initShell() {
           : 'SECURE ONLINE SERVICE｜會員資料需登入並通過資格驗證';
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      if (api.hasLiveApi()) setDemoControlsVisible(false);
+    });
 }
 
 export function sourceNotice(source, target) {

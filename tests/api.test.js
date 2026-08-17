@@ -100,13 +100,55 @@ test('a visitor can submit the public advisory form without gaining member acces
   assert.equal((await app.request('/api/bookings')).status, 401);
 });
 
+test('member activation binds identity and explicit consent to the authenticated member', async () => {
+  const { app, store } = await fixture();
+  const unverifiedFriend = await login(app, 'member', 'member-025');
+  const cookie = await login(app, 'member', 'member-026');
+  const input = {
+    fullName: 'DEMO 測試姓名', phone: '0912-345-678', sourceCode: 'SF-NORTH',
+    sourceName: 'DEMO 北區投資班', lineFriendConfirmed: true, privacyConsent: true,
+  };
+  const withoutConsent = await app.request('/api/activation', {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ ...input, privacyConsent: false }),
+  });
+  assert.equal(withoutConsent.status, 409);
+
+  const spoofedFriend = await app.request('/api/activation', {
+    method: 'POST', headers: { cookie: unverifiedFriend, 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  assert.equal(spoofedFriend.status, 409);
+  assert.equal((await spoofedFriend.json()).error.code, 'line_friendship_required');
+
+  const response = await app.request('/api/activation', {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(input),
+  });
+  assert.equal(response.status, 201);
+  const activation = (await response.json()).activation;
+  assert.equal(activation.memberId, 'member-026');
+  assert.equal(activation.privacyConsent, true);
+  assert.equal(activation.lineFriendshipEvidence, 'friend');
+  assert.match(activation.consentedAt, /^2026-|^20\d{2}-/);
+  const member = store.data.members.find((item) => item.id === 'member-026');
+  assert.equal(member.legalName, input.fullName);
+  assert.equal(member.phone, '0912345678');
+  assert.equal(member.sourceGroup, input.sourceName);
+});
+
 test('subscription creation is permission-gated and idempotent', async () => {
   const { app, store } = await fixture();
   const cookie = await login(app, 'member', 'member-001');
+  const missingRisk = await app.request('/api/subscriptions', {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json', 'idempotency-key': 'intent-no-risk' },
+    body: JSON.stringify({ projectId: 'project-01', requestedAmountTwd: 500_000 }),
+  });
+  assert.equal(missingRisk.status, 409);
   const request = () => app.request('/api/subscriptions', {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json', 'idempotency-key': 'intent-0001' },
-    body: JSON.stringify({ projectId: 'project-01', requestedAmountTwd: 500_000 }),
+    body: JSON.stringify({ projectId: 'project-01', requestedAmountTwd: 500_000, riskAcknowledged: true }),
   });
   const first = await request();
   const firstBody = await first.json();
@@ -121,12 +163,12 @@ test('subscription creation is permission-gated and idempotent', async () => {
   const unqualified = await login(app, 'member', 'member-025');
   const forbidden = await app.request('/api/subscriptions', {
     method: 'POST', headers: { cookie: unqualified, 'content-type': 'application/json', 'idempotency-key': 'intent-0002' },
-    body: JSON.stringify({ projectId: 'project-01', requestedAmountTwd: 500_000 }),
+    body: JSON.stringify({ projectId: 'project-01', requestedAmountTwd: 500_000, riskAcknowledged: true }),
   });
   assert.equal(forbidden.status, 403);
 });
 
-test('admin mutations require external approval evidence and append immutable audit events', async () => {
+test('admin mutations require external approval evidence and append application audit events', async () => {
   const { app, store } = await fixture();
   const admin = await login(app, 'admin');
   const beforeAuditCount = store.data.audits.length;
@@ -137,11 +179,27 @@ test('admin mutations require external approval evidence and append immutable au
   assert.equal(missingEvidence.status, 409);
   assert.equal(store.data.audits.length, beforeAuditCount);
 
+  const invalidDates = await app.request('/api/admin/members/member-019', {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      qualificationState: 'approved',
+      qualificationApproval: {
+        approver: 'DEMO Partner', approvedAt: '2035-01-01T00:00:00.000Z',
+        reference: 'Q-FUTURE', expiresAt: '2036-01-01T00:00:00.000Z',
+      },
+    }),
+  });
+  assert.equal(invalidDates.status, 409);
+  assert.equal(store.data.audits.length, beforeAuditCount);
+
   const approved = await app.request('/api/admin/members/member-019', {
     method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
     body: JSON.stringify({
       qualificationState: 'approved',
-      qualificationApproval: { approver: 'DEMO Partner', approvedAt: new Date().toISOString(), reference: 'Q-019' },
+      qualificationApproval: {
+        approver: 'DEMO Partner', approvedAt: new Date().toISOString(), reference: 'Q-019',
+        expiresAt: '2028-08-18T00:00:00.000Z',
+      },
       reason: 'Recorded external decision',
     }),
   });
@@ -181,7 +239,7 @@ test('LINE webhook rejects unsigned requests and accepts a valid signature', asy
   assert.equal(store.data.members[0].lineFriendshipState, 'blocked');
 });
 
-test('notification queue retries three times and then enters the operations queue', async () => {
+test('notification queue makes one initial attempt plus three retries before entering the operations queue', async () => {
   const store = await new MemoryStore(createSeedData()).init();
   const failingLine = {
     demoMode: true,
@@ -199,14 +257,14 @@ test('notification queue retries three times and then enters the operations queu
   });
   assert.equal(queuedResponse.status, 201);
   const notificationId = (await queuedResponse.json()).notification.id;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     const processed = await app.request('/api/admin/notifications/process', { method: 'POST', headers: { cookie: admin } });
     assert.equal(processed.status, 200);
   }
   const notification = store.data.notifications.find((item) => item.id === notificationId);
-  assert.equal(notification.attempts, 3);
+  assert.equal(notification.attempts, 4);
   assert.equal(notification.status, 'failed');
-  assert.ok(store.data.audits.filter((item) => item.entityId === notificationId && item.action === 'notification.failed').length === 3);
+  assert.equal(store.data.audits.filter((item) => item.entityId === notificationId && item.action === 'notification.failed').length, 4);
 });
 
 test('admin CSV and audit endpoints are never available to a member', async () => {

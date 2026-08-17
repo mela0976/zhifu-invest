@@ -1,19 +1,21 @@
 import { api, appUrl, request } from './api.js';
-import { emptyState, errorState, escapeHtml, formatDate, formatMoney, initShell, openDialog, closeDialog, setButtonBusy, sourceNotice, toast } from './common.js';
+import { emptyState, errorState, escapeHtml, formatDate, formatMoney, initShell, openDialog, closeDialog, qualificationExpiryIso, resolveAdminDashboardRoute, setButtonBusy, sourceNotice, toast } from './common.js';
 import { statusLabels } from './demo-data.js';
 
-let dashboard = { kpis: {}, members: [], subscriptions: [], actions: [] };
+let dashboard = { kpis: {}, members: [], subscriptions: [], bookings: [], actions: [] };
 let projects = [];
 let selectedSubscription = null;
 let selectedMember = null;
 let activeView = 'overview';
 
 const statusLabel = (value) => statusLabels[value] || value || '待確認';
+const dateTimeInputValue = (value) => value && !Number.isNaN(new Date(value).getTime())
+  ? new Date(value).toISOString().slice(0, 16) : '';
 const memberDialog = document.querySelector('#member-dialog');
 const subscriptionDialog = document.querySelector('#subscription-admin-dialog');
 
 function showView(view, updateHash = true) {
-  const next = ['overview', 'members', 'subscriptions', 'projects', 'content', 'notifications', 'audit'].includes(view) ? view : 'overview';
+  const next = ['overview', 'members', 'subscriptions', 'bookings', 'projects', 'content', 'notifications', 'audit'].includes(view) ? view : 'overview';
   activeView = next;
   document.querySelectorAll('[data-admin-view]').forEach((section) => { section.hidden = section.dataset.adminView !== next; });
   document.querySelectorAll('[data-admin-nav]').forEach((link) => {
@@ -85,6 +87,13 @@ function renderSubscriptions() {
   document.querySelector('#overview-subscriptions').innerHTML = dashboard.subscriptions.length ? subscriptionRows(dashboard.subscriptions.slice().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 5), true) : emptyState('沒有近期異動', '新的認購事件會出現在這裡。');
 }
 
+function renderBookings() {
+  const target = document.querySelector('#admin-booking-list');
+  if (!target) return;
+  const items = dashboard.bookings.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  target.innerHTML = items.length ? `<div class="record-list">${items.map((item) => `<article class="record-card" data-testid="admin-booking"><div class="record-card__head"><div><span class="mono micro">${escapeHtml(item.id)}</span><h3>${escapeHtml(item.topic || item.advisorType || '顧問預約')}</h3></div><span class="status" data-status="${escapeHtml(item.status || 'requested')}">${escapeHtml(statusLabel(item.status || 'requested'))}</span></div><div class="record-card__body"><p><strong>${escapeHtml(item.contactName || item.memberName || item.memberId || '訪客')}</strong></p><p class="micro">偏好：${formatDate(item.preferredDate)}｜${escapeHtml(item.preferredTime || '時段待確認')}</p><p class="micro">身分：${escapeHtml(item.identityType || 'investor')}｜會員：${escapeHtml(item.memberId || '未綁定')}</p>${item.notes ? `<p>${escapeHtml(item.notes)}</p>` : ''}</div></article>`).join('')}</div>` : emptyState('目前沒有預約', '公開或會員顧問預約送出後會出現在這裡。');
+}
+
 function renderProjects() {
   document.querySelector('#admin-project-grid').innerHTML = projects.length ? projects.map((project) => {
     const protectedData = project.protected || {};
@@ -99,7 +108,7 @@ function renderProjects() {
   }).join('') : '<p class="micro">尚無進度資料。</p>';
 }
 
-function renderAll() { renderKpis(); renderActions(); renderMembers(); renderSubscriptions(); renderProjects(); }
+function renderAll() { renderKpis(); renderActions(); renderMembers(); renderSubscriptions(); renderBookings(); renderProjects(); }
 
 function openMember(id) {
   selectedMember = dashboard.members.find((item) => String(item.id) === String(id));
@@ -107,6 +116,12 @@ function openMember(id) {
   document.querySelector('#member-id').value = selectedMember.id;
   document.querySelector('#member-dialog-summary').innerHTML = `<strong>${escapeHtml(selectedMember.name || selectedMember.displayName)}</strong><br><span class="micro">${escapeHtml(selectedMember.id)}｜${escapeHtml(selectedMember.source || selectedMember.sourceGroup || '來源待確認')}</span>`;
   document.querySelector('#membership-state').value = memberState(selectedMember);
+  document.querySelector('#qualification-state').value = qualificationState(selectedMember);
+  const approval = selectedMember.qualificationApproval || {};
+  document.querySelector('#qualification-approver').value = approval.approver || '';
+  document.querySelector('#qualification-approved-at').value = dateTimeInputValue(approval.approvedAt);
+  document.querySelector('#qualification-reference').value = approval.reference || '';
+  document.querySelector('#qualification-expires-at').value = String(approval.expiresAt || '').slice(0, 10);
   document.querySelector('#member-reason').value = '';
   openDialog(memberDialog);
 }
@@ -129,10 +144,11 @@ function openSubscription(id) {
 
 async function loadDashboard() {
   try {
-    const [result, projectResult] = await Promise.all([api.adminDashboard(), api.projects()]);
+    const [result, projectResult, bookingResult] = await Promise.all([api.adminDashboard(), api.projects(), api.bookings().catch(() => [])]);
     dashboard = { ...dashboard, ...(result.data || {}) };
     dashboard.members = Array.isArray(dashboard.members) ? dashboard.members : [];
     dashboard.subscriptions = Array.isArray(dashboard.subscriptions) ? dashboard.subscriptions : [];
+    dashboard.bookings = Array.isArray(bookingResult) ? bookingResult : bookingResult?.bookings || bookingResult?.items || [];
     dashboard.actions = Array.isArray(dashboard.actions) ? dashboard.actions : [];
     projects = Array.isArray(projectResult.data) ? projectResult.data : projectResult.data?.projects || [];
     sourceNotice(result.source, document.querySelector('#admin-source'));
@@ -186,7 +202,25 @@ document.querySelector('#member-form').addEventListener('submit', async (event) 
   setButtonBusy(button, true, '正在儲存…');
   try {
     const data = Object.fromEntries(new FormData(event.currentTarget));
-    const updated = await api.updateMember(data.memberId, { membershipState: data.membershipState, reason: data.reason });
+    const payload = {
+      membershipState: data.membershipState,
+      qualificationState: data.qualificationState,
+      reason: data.reason,
+    };
+    if (data.qualificationState === 'approved') {
+      if (!data.qualificationApprover || !data.qualificationApprovedAt || !data.qualificationReference || !data.qualificationExpiresAt) {
+        throw new Error('資格核准必須填寫合作機構核准人、核准時間、參考編號與到期日。');
+      }
+      const expiresAt = qualificationExpiryIso(data.qualificationExpiresAt);
+      if (!expiresAt) throw new Error('資格到期日必須晚於今天。');
+      payload.qualificationApproval = {
+        approver: data.qualificationApprover,
+        approvedAt: new Date(data.qualificationApprovedAt).toISOString(),
+        reference: data.qualificationReference,
+        expiresAt,
+      };
+    }
+    const updated = await api.updateMember(data.memberId, payload);
     dashboard.members = dashboard.members.map((item) => item.id === data.memberId ? { ...item, ...updated, membership: updated.membershipState } : item);
     renderMembers(); renderKpis();
     closeDialog(memberDialog); toast('會員狀態已更新並寫入稽核紀錄。');
@@ -226,6 +260,37 @@ document.querySelector('#notification-refresh').addEventListener('click', loadNo
 document.querySelector('#audit-refresh').addEventListener('click', loadAudits);
 window.addEventListener('hashchange', () => showView(location.hash.slice(1), false));
 
-initShell();
-showView(location.hash.slice(1) || 'overview', false);
-loadDashboard();
+function renderAdminUnavailable(message) {
+  document.querySelector('.admin-sidebar')?.setAttribute('hidden', '');
+  document.querySelector('.mobile-admin-bar')?.setAttribute('hidden', '');
+  const main = document.querySelector('#admin-main');
+  if (main) main.innerHTML = `<section class="panel" data-testid="admin-unavailable"><div class="panel__body">${errorState('正式營運後台未開放', message)}</div></section>`;
+}
+
+async function initializeAdmin() {
+  initShell();
+  if (api.hasLiveApi()) {
+    let config;
+    try {
+      config = await api.detectConfig();
+    } catch {
+      renderAdminUnavailable('無法驗證正式營運後台設定，請聯絡系統管理員。');
+      return;
+    }
+    const route = resolveAdminDashboardRoute(config, true);
+    if (route.mode !== 'redirect') {
+      renderAdminUnavailable('正式 API 尚未提供 adminDashboardUrl；為保護會員與認購資料，本頁不會載入 Demo 後台。');
+      return;
+    }
+    if (route.url === window.location.href) {
+      renderAdminUnavailable('營運後台網址不可指回目前頁面，請聯絡系統管理員修正設定。');
+      return;
+    }
+    window.location.replace(route.url);
+    return;
+  }
+  showView(location.hash.slice(1) || 'overview', false);
+  loadDashboard();
+}
+
+initializeAdmin();

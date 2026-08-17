@@ -90,6 +90,7 @@ function seedDemoData() {
         allocationState: !allocated ? 'pending' : allocated < received - refunded ? 'partial' : 'final',
         requestedAmountTwd: requested, approvedAmountTwd: requested,
         receivedAmountTwd: received, allocatedAmountTwd: allocated, refundedAmountTwd: refunded,
+        riskAcknowledged: true, riskAcknowledgedAt: now, riskDisclosureVersion: 'demo-draft-0.1',
         partnerApproval: {
           approver: 'DEMO｜持牌合作機構', approvedAt: now,
           reference: 'DEMO-S-' + String(index + 1).padStart(4, '0')

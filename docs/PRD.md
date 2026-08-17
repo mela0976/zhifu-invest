@@ -23,7 +23,7 @@ The product is not an online securities transaction or payment system. Contracts
 4. Funding: unpaid → partial → paid / refunded.
 5. Allocation: pending → partial → final.
 
-Each subscription stores requested, approved, received, allocated, and refunded TWD amounts. Every mutation appends an immutable audit event with actor, time, before/after values, and reason.
+Each subscription stores requested, approved, received, allocated, and refunded TWD amounts. Every mutation appends an application-level append-only audit event with actor, time, before/after values, and reason. Google Sheets is not a WORM store; a regulated retention lock requires a separate production audit service.
 
 ## Surfaces
 
