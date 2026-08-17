@@ -1,6 +1,6 @@
 # 致富投資
 
-Mobile-first investment membership and subscription-operations MVP for the 雪芬姐 community. The local build is a real permissioned workflow with Demo identity and notification adapters; production providers can be enabled through environment variables without moving secrets into browser code.
+Mobile-first investment membership, referral attribution, commission ledger, and subscription-operations MVP for 雪芬姐 plus approved high-net-worth investor referral networks. The local build is a real permissioned workflow with Demo identity and notification adapters; production providers can be enabled through environment variables without moving secrets into browser code.
 
 > Demo content is fictional and is not an offer, solicitation, investment recommendation, or record of real performance.
 
@@ -61,7 +61,7 @@ When the repository variable `PUBLIC_API_BASE_URL` points to the production Clou
 
 - Visitor: public educational content and anonymized project teasers.
 - Member: use the Demo member action to see only that member's projects, amounts, timeline, bookings, and secure deck access.
-- 雪芬姐 dashboard: use the Demo admin action to operate confirmations, record qualification evidence and per-project access, update the five amount fields, inspect bookings, retry notifications, export CSV, and inspect audit history.
+- Operations dashboard: use the Demo admin action to operate confirmations, verify member referrers, manage referral partners and immutable commission snapshots, record qualification evidence and per-project access, update the five amount fields, inspect bookings, retry notifications, export CSV, and inspect audit history.
 
 No shared password is embedded in the repository. Demo sign-in calls a local-only endpoint and receives the same signed, HttpOnly session shape used by the LINE provider adapter.
 
@@ -74,7 +74,7 @@ flowchart LR
     Gateway --> R2["Protected Pitch Decks in R2"]
     Gateway --> Ops["Apps Script operations service"]
     Ops --> Sheets["Google Sheets operational store"]
-    Admin["雪芬姐 Google-auth dashboard"] --> Ops
+    Admin["雪芬姐 / operations Google-auth dashboard"] --> Ops
 ```
 
 The Docker build runs these boundaries in one Node process for local acceptance. Integration modules keep identity, notification, storage, and document delivery replaceable.
@@ -91,4 +91,4 @@ The Docker build runs these boundaries in one Node process for local acceptance.
 
 ## Confirmed scope
 
-See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements. The credential setup, deployment order, and live acceptance checklist are in [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). If a LINE secret or token may have been disclosed, follow [docs/LINE_CREDENTIAL_ROTATION.md](docs/LINE_CREDENTIAL_ROTATION.md) before deployment. Implemented, locally verified, and still-external items are separated in [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).
+See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements. The immutable attribution and commission rules are in [docs/REFERRAL_COMMISSION_MODEL.md](docs/REFERRAL_COMMISSION_MODEL.md). The credential setup, deployment order, and live acceptance checklist are in [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). If a LINE secret or token may have been disclosed, follow [docs/LINE_CREDENTIAL_ROTATION.md](docs/LINE_CREDENTIAL_ROTATION.md) before deployment. Implemented, locally verified, and still-external items are separated in [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).

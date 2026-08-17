@@ -5,12 +5,16 @@ import {
   AMOUNT_FIELDS,
   DomainError,
   assertTransition,
+  captureReferralSnapshot,
   canAccessProtectedProject,
   createSubscriptionRecord,
+  isReferrerEffective,
   memberProject,
   publicProject,
   redactMember,
+  updateCommissionRecord,
   updateSubscriptionRecord,
+  validateReferrer,
 } from './domain.js';
 import { createSessionManager, parseCookies, requireRole } from './auth.js';
 import { createLineProvider, statusMessage } from './line.js';
@@ -89,8 +93,18 @@ function enrichedSubscription(subscription, data) {
   };
 }
 
+function memberSubscription(subscription, data) {
+  const visible = enrichedSubscription(subscription, data);
+  for (const field of [
+    'referralSnapshot', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd',
+    'commissionApproval', 'commissionPayment', 'commissionVoidReason',
+  ]) delete visible[field];
+  return visible;
+}
+
 function enrichedMember(member, data) {
   const subscriptions = data.subscriptions.filter((item) => item.memberId === member.id);
+  const referrer = (data.referrers || []).find((item) => item.id === member.referralAttribution?.referrerId);
   return {
     ...member,
     name: member.legalName || member.displayName,
@@ -98,19 +112,40 @@ function enrichedMember(member, data) {
     membership: member.membershipState,
     qualification: member.qualificationState,
     lineFriend: member.lineFriendshipState === 'friend',
+    referrerName: referrer?.displayName || null,
     requested: subscriptions.reduce((sum, item) => sum + item.requestedAmountTwd, 0),
     received: subscriptions.reduce((sum, item) => sum + item.receivedAmountTwd, 0),
   };
 }
 
+function enrichedCommission(subscription, data) {
+  const enriched = enrichedSubscription(subscription, data);
+  return {
+    ...enriched,
+    referrerName: subscription.referralSnapshot?.referrerName || null,
+  };
+}
+
 function dashboardOverview(data) {
   const sums = Object.fromEntries(AMOUNT_FIELDS.map((field) => [field, data.subscriptions.reduce((sum, item) => sum + item[field], 0)]));
+  const commissions = data.subscriptions.filter((item) => item.referralSnapshot);
   return {
     memberCount: data.members.length,
     pendingMemberCount: data.members.filter((item) => item.membershipState === 'pending').length,
     needsInformationCount: data.members.filter((item) => item.qualificationState === 'needs_information').length,
     pendingPartnerReviewCount: data.subscriptions.filter((item) => item.subscriptionState === 'partner_review').length,
     notificationAttentionCount: data.notifications.filter((item) => ['awaiting_confirmation', 'configuration_required', 'failed'].includes(item.status)).length,
+    referrerCount: (data.referrers || []).length,
+    attributedMemberCount: data.members.filter((item) => item.referralAttribution?.state === 'verified').length,
+    commissionAccruedAmountTwd: commissions
+      .filter((item) => item.commissionState === 'accrued')
+      .reduce((sum, item) => sum + (item.commissionAccruedAmountTwd || 0), 0),
+    commissionApprovedAmountTwd: commissions
+      .filter((item) => item.commissionState === 'approved')
+      .reduce((sum, item) => sum + (item.commissionAccruedAmountTwd || 0), 0),
+    commissionPaidAmountTwd: commissions
+      .filter((item) => item.commissionState === 'paid')
+      .reduce((sum, item) => sum + (item.commissionAccruedAmountTwd || 0), 0),
     ...sums,
   };
 }
@@ -299,7 +334,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const current = {
       authenticated: true,
       role: session.role,
-      member: member ? publicMemberView(member) : null,
+      member: member ? publicMemberView(member, data) : null,
     };
     return c.json({ ok: true, ...current, data: current });
   });
@@ -318,7 +353,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       const member = data.members.find((item) => item.id === (body.memberId || 'member-001'));
       if (!member) return error(c, 404, 'member_not_found', 'Demo member was not found');
       payload = { role, memberId: member.id };
-      subject = publicMemberView(member);
+      subject = publicMemberView(member, data);
     }
     c.header('set-cookie', sessions.cookie(sessions.issue(payload)));
     return c.json({ ok: true, role, subject, data: { role, subject } });
@@ -367,6 +402,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         id: `member-${randomUUID()}`, demo: false, displayName, legalName: '', phone: '', email: '', lineUserId,
         lineFriendshipState: 'unknown', sourceGroup: '', membershipState: 'pending',
         qualificationState: 'not_applied', qualificationApproval: null, tier: 'free', projectAccess: [],
+        referralAttribution: null,
         createdAt: now, updatedAt: now,
       };
       draft.members.push(found);
@@ -378,7 +414,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     });
     c.header('set-cookie', sessions.cookie(sessions.issue({ role: 'member', memberId: member.id })));
     if (c.req.query('return') === 'json') {
-      const result = { role: 'member', member: publicMemberView(member) };
+      const result = { role: 'member', member: publicMemberView(member, store.snapshot()) };
       return c.json({ ok: true, ...result, data: result });
     }
     return c.redirect(`${origin}${statePayload.returnTo || '/'}`, 302);
@@ -431,24 +467,46 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         );
       }
       const before = structuredClone(member);
+      const now = new Date().toISOString();
+      const referralCode = String(body.sourceCode).trim().toUpperCase();
+      const matchedReferrer = (draft.referrers || []).find((item) => (
+        item.code === referralCode && isReferrerEffective(item, now)
+      ));
       member.legalName = String(body.fullName).trim();
       member.phone = phone;
       member.sourceGroup = String(body.sourceName).trim();
       member.membershipState = 'pending';
-      member.updatedAt = new Date().toISOString();
+      if (member.referralAttribution?.state !== 'verified') {
+        member.referralAttribution = matchedReferrer ? {
+          referrerId: matchedReferrer.id,
+          referralCode: matchedReferrer.code,
+          state: 'claimed',
+          evidenceReference: null,
+          claimedAt: now,
+          verifiedAt: null,
+          verifiedBy: null,
+        } : null;
+      }
+      member.updatedAt = now;
       const activation = {
         id: `activation-${randomUUID()}`, memberId: member.id, status: 'pending',
-        fullName: member.legalName, phone: member.phone, sourceCode: String(body.sourceCode).trim(),
+        fullName: member.legalName, phone: member.phone, sourceCode: referralCode,
         sourceName: member.sourceGroup, lineFriendConfirmed: true,
         lineFriendshipEvidence: member.lineFriendshipState, privacyConsent: true,
+        referralAttribution: member.referralAttribution ? structuredClone(member.referralAttribution) : null,
         consentedAt: member.updatedAt, submittedAt: member.updatedAt,
       };
       draft.activations.push(activation);
       await store.appendAudit(draft, {
         entityType: 'member', entityId: member.id, action: 'activation.submitted', actor: actorFrom(c),
-        before: { membershipState: before.membershipState, sourceGroup: before.sourceGroup },
+        before: {
+          membershipState: before.membershipState,
+          sourceGroup: before.sourceGroup,
+          referralAttribution: before.referralAttribution || null,
+        },
         after: {
           membershipState: member.membershipState, sourceGroup: member.sourceGroup,
+          referralAttribution: member.referralAttribution,
           activationId: activation.id, privacyConsent: true, consentedAt: activation.consentedAt,
         },
         reason: 'Member submitted community activation',
@@ -457,7 +515,9 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       await queueOperationsNotification(draft, 'operations.activation_received', { memberId: member.id });
       return activation;
     });
-    return c.json({ ok: true, activation: result, data: result }, 201);
+    const { referralAttribution: internalAttribution, ...visible } = result;
+    visible.referralClaimed = Boolean(internalAttribution);
+    return c.json({ ok: true, activation: visible, data: visible }, 201);
   });
 
   app.get('/api/bookings', (c) => {
@@ -519,7 +579,9 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const subscriptions = session.role === ADMIN_ROLE
       ? data.subscriptions
       : data.subscriptions.filter((item) => item.memberId === session.memberId);
-    const visible = subscriptions.map((item) => enrichedSubscription(item, data));
+    const visible = subscriptions.map((item) => session.role === ADMIN_ROLE
+      ? enrichedSubscription(item, data)
+      : memberSubscription(item, data));
     return c.json({ ok: true, subscriptions: visible, data: visible });
   });
 
@@ -553,6 +615,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         riskAcknowledged: true,
         riskAcknowledgedAt: now,
         riskDisclosureVersion: 'draft-0.1-2026-08-18',
+        referralSnapshot: captureReferralSnapshot(member, draft.referrers || [], now),
         now,
       });
       if (record.requestedAmountTwd < project.protected.minimumAmountTwd || record.requestedAmountTwd % project.protected.incrementAmountTwd !== 0) {
@@ -573,7 +636,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       );
       return { subscription: record, replayed: false };
     });
-    const response = { ...result, subscription: enrichedSubscription(result.subscription, store.snapshot()) };
+    const response = { ...result, subscription: memberSubscription(result.subscription, store.snapshot()) };
     return c.json({ ok: true, ...response, data: response.subscription }, result.replayed ? 200 : 201);
   });
 
@@ -674,12 +737,104 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         approvedAmount: overview.approvedAmountTwd,
         receivedAmount: overview.receivedAmountTwd,
         allocatedAmount: overview.allocatedAmountTwd,
+        referrerCount: overview.referrerCount,
+        attributedMemberCount: overview.attributedMemberCount,
+        commissionAccruedAmountTwd: overview.commissionAccruedAmountTwd,
+        commissionApprovedAmountTwd: overview.commissionApprovedAmountTwd,
+        commissionPaidAmountTwd: overview.commissionPaidAmountTwd,
       },
+      referrers: data.referrers || [],
       members: data.members.map((item) => enrichedMember(item, data)),
       subscriptions: data.subscriptions.map((item) => enrichedSubscription(item, data)),
+      commissions: data.subscriptions
+        .filter((item) => item.referralSnapshot)
+        .map((item) => enrichedCommission(item, data)),
       actions: dashboardActions(data),
     };
     return c.json({ ok: true, dashboard, data: dashboard });
+  });
+
+  app.get('/api/admin/referrers', (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const referrers = store.snapshot().referrers || [];
+    return c.json({ ok: true, referrers, data: referrers });
+  });
+
+  app.post('/api/admin/referrers', async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    if (!String(body.reason || '').trim()) {
+      return error(c, 409, 'referrer_reason_required', 'reason is required when creating a referrer');
+    }
+    const referrer = await store.mutate(async (draft) => {
+      const now = new Date().toISOString();
+      const normalized = validateReferrer({
+        ...body,
+        status: body.status || 'active',
+        commissionBasis: body.commissionBasis || 'allocated_amount',
+      });
+      draft.referrers ||= [];
+      if (draft.referrers.some((item) => item.code === normalized.code)) {
+        throw new DomainError('Referrer code already exists', 'duplicate_referrer_code', 409);
+      }
+      const record = {
+        id: `referrer-${randomUUID()}`,
+        demo: false,
+        ...normalized,
+        createdAt: now,
+        updatedAt: now,
+      };
+      draft.referrers.push(record);
+      await store.appendAudit(draft, {
+        entityType: 'referrer', entityId: record.id, action: 'referrer.created', actor: actorFrom(c),
+        before: null, after: record, reason: String(body.reason || 'Referrer created'),
+      });
+      return record;
+    });
+    return c.json({ ok: true, referrer, data: referrer }, 201);
+  });
+
+  app.patch('/api/admin/referrers/:id', async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    if (!String(body.reason || '').trim()) {
+      return error(c, 409, 'referrer_reason_required', 'reason is required when changing a referrer');
+    }
+    const referrer = await store.mutate(async (draft) => {
+      draft.referrers ||= [];
+      const index = draft.referrers.findIndex((item) => item.id === c.req.param('id'));
+      if (index < 0) throw new DomainError('Referrer was not found', 'referrer_not_found', 404);
+      const before = structuredClone(draft.referrers[index]);
+      const permitted = Object.fromEntries([
+        'code', 'displayName', 'legalName', 'contactName', 'contactEmail', 'status',
+        'defaultCommissionRateBps', 'commissionBasis', 'agreementReference', 'effectiveAt', 'expiresAt',
+      ].flatMap((field) => body[field] !== undefined ? [[field, body[field]]] : []));
+      const normalized = validateReferrer({ ...before, ...permitted });
+      if (draft.referrers.some((item, itemIndex) => itemIndex !== index && item.code === normalized.code)) {
+        throw new DomainError('Referrer code already exists', 'duplicate_referrer_code', 409);
+      }
+      const next = { ...before, ...normalized, updatedAt: new Date().toISOString() };
+      draft.referrers[index] = next;
+      await store.appendAudit(draft, {
+        entityType: 'referrer', entityId: next.id, action: 'referrer.updated', actor: actorFrom(c),
+        before, after: next, reason: String(body.reason || 'Referrer updated'),
+      });
+      return next;
+    });
+    return c.json({ ok: true, referrer, data: referrer });
+  });
+
+  app.get('/api/admin/commissions', (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const data = store.snapshot();
+    const commissions = data.subscriptions
+      .filter((item) => item.referralSnapshot)
+      .map((item) => enrichedCommission(item, data));
+    return c.json({ ok: true, commissions, data: commissions });
   });
 
   app.get('/api/admin/members', (c) => {
@@ -709,6 +864,9 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const denied = gate(c, [ADMIN_ROLE]);
     if (denied) return denied;
     const body = await jsonBody(c);
+    if (body.referralAttribution !== undefined && !String(body.reason || '').trim()) {
+      return error(c, 409, 'referral_reason_required', 'reason is required when changing referral attribution');
+    }
     const updated = await store.mutate(async (draft) => {
       const member = draft.members.find((item) => item.id === c.req.param('id'));
       if (!member) throw new DomainError('Member was not found', 'member_not_found', 404);
@@ -744,6 +902,34 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         if (!Array.isArray(body.projectAccess)) throw new DomainError('projectAccess must be an array');
         member.projectAccess = [...new Set(body.projectAccess.filter((id) => draft.projects.some((item) => item.id === id)))];
       }
+      if (body.referralAttribution !== undefined) {
+        if (body.referralAttribution === null) {
+          member.referralAttribution = null;
+        } else {
+          const input = bodyObject(body.referralAttribution);
+          const evidenceReference = String(input.evidenceReference || '').trim();
+          const referrer = (draft.referrers || []).find((item) => item.id === input.referrerId);
+          const now = new Date().toISOString();
+          if (!referrer) throw new DomainError('Referrer was not found', 'referrer_not_found', 404);
+          if (!isReferrerEffective(referrer, now)) {
+            throw new DomainError('Referrer must be active and effective', 'referrer_not_effective', 409);
+          }
+          if (!evidenceReference) {
+            throw new DomainError('evidenceReference is required to verify attribution', 'referral_evidence_required', 409);
+          }
+          member.referralAttribution = {
+            referrerId: referrer.id,
+            referralCode: referrer.code,
+            state: 'verified',
+            evidenceReference,
+            claimedAt: member.referralAttribution?.referrerId === referrer.id
+              ? member.referralAttribution.claimedAt || now
+              : now,
+            verifiedAt: now,
+            verifiedBy: actorFrom(c).id,
+          };
+        }
+      }
       if (body.tier !== undefined) member.tier = String(body.tier);
       member.updatedAt = new Date().toISOString();
       await store.appendAudit(draft, {
@@ -754,7 +940,8 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       if (eventType) await queueNotification(draft, { member, eventType, actor: actorFrom(c) });
       return member;
     });
-    return c.json({ ok: true, member: updated, data: updated });
+    const visible = enrichedMember(updated, store.snapshot());
+    return c.json({ ok: true, member: visible, data: visible });
   });
 
   app.get('/api/admin/projects', (c) => {
@@ -822,6 +1009,33 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     });
     const visible = enrichedSubscription(subscription, store.snapshot());
     return c.json({ ok: true, subscription: visible, data: visible });
+  });
+
+  app.patch('/api/admin/commissions/:subscriptionId', async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const subscription = await store.mutate(async (draft) => {
+      const index = draft.subscriptions.findIndex((item) => item.id === c.req.param('subscriptionId'));
+      if (index < 0) throw new DomainError('Subscription was not found', 'subscription_not_found', 404);
+      const before = structuredClone(draft.subscriptions[index]);
+      const next = updateCommissionRecord(before, {
+        action: body.action,
+        approvalReference: body.approvalReference,
+        payoutReference: body.payoutReference,
+        voidReason: body.voidReason,
+        reason: body.reason,
+        actorId: actorFrom(c).id,
+      }, new Date().toISOString());
+      draft.subscriptions[index] = next;
+      await store.appendAudit(draft, {
+        entityType: 'commission', entityId: next.id, action: `commission.${body.action}`,
+        actor: actorFrom(c), before, after: next, reason: String(body.reason).trim(),
+      });
+      return next;
+    });
+    const visible = enrichedCommission(subscription, store.snapshot());
+    return c.json({ ok: true, commission: visible, data: visible });
   });
 
   app.get('/api/admin/notifications', (c) => {
@@ -896,14 +1110,31 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const resource = filename.endsWith('.csv') ? filename.slice(0, -4) : filename;
     const data = store.snapshot();
     const fields = resource === 'members'
-      ? ['id', 'displayName', 'phone', 'email', 'membershipState', 'qualificationState', 'tier', 'sourceGroup', 'updatedAt']
+      ? ['id', 'displayName', 'phone', 'email', 'membershipState', 'qualificationState', 'tier', 'sourceGroup', 'referrerName', 'referralAttribution', 'updatedAt']
       : resource === 'subscriptions'
-        ? ['id', 'memberId', 'projectId', 'subscriptionState', 'fundingState', 'allocationState', ...AMOUNT_FIELDS, 'updatedAt']
-        : null;
-    if (!fields) return error(c, 404, 'export_not_found', 'Supported exports are members and subscriptions');
+        ? ['id', 'memberId', 'projectId', 'subscriptionState', 'fundingState', 'allocationState', ...AMOUNT_FIELDS, 'referralSnapshot', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd', 'updatedAt']
+        : resource === 'referrers'
+          ? ['id', 'code', 'displayName', 'legalName', 'contactName', 'contactEmail', 'status', 'defaultCommissionRateBps', 'commissionBasis', 'agreementReference', 'effectiveAt', 'expiresAt', 'createdAt', 'updatedAt']
+          : resource === 'commissions'
+            ? ['id', 'memberId', 'projectId', 'referrerId', 'referrerName', 'referralCode', 'commissionRateBps', 'commissionBasis', 'agreementReference', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd', 'commissionApproval', 'commissionPayment', 'commissionVoidReason', 'updatedAt']
+            : null;
+    if (!fields) return error(c, 404, 'export_not_found', 'Supported exports are members, subscriptions, referrers and commissions');
+    const rows = resource === 'members'
+      ? data.members.map((item) => enrichedMember(item, data))
+      : resource === 'commissions'
+        ? data.subscriptions.filter((item) => item.referralSnapshot).map((item) => ({
+          ...item,
+          referrerId: item.referralSnapshot.referrerId,
+          referrerName: item.referralSnapshot.referrerName,
+          referralCode: item.referralSnapshot.referralCode,
+          commissionRateBps: item.referralSnapshot.commissionRateBps,
+          commissionBasis: item.referralSnapshot.commissionBasis,
+          agreementReference: item.referralSnapshot.agreementReference,
+        }))
+        : data[resource];
     c.header('content-type', 'text/csv; charset=utf-8');
     c.header('content-disposition', `attachment; filename="${resource}.csv"`);
-    return c.body(`\uFEFF${toCsv(data[resource], fields)}`);
+    return c.body(`\uFEFF${toCsv(rows, fields)}`);
   });
 
   app.get('/api/*', (c) => error(c, 404, 'not_found', 'API endpoint was not found'));

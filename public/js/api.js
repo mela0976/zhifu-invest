@@ -293,13 +293,15 @@ export const api = {
         return await request('/api/admin/dashboard');
       } catch (error) {
         if (error.status !== 404) throw error;
-        const [overview, members, subscriptions, actions] = await Promise.all([
+        const [overview, members, subscriptions, referrers, commissions, actions] = await Promise.all([
           request('/api/admin/overview'),
           request('/api/admin/members'),
           request('/api/admin/subscriptions'),
+          request('/api/admin/referrers').catch(() => []),
+          request('/api/admin/commissions').catch(() => []),
           request('/api/admin/actions'),
         ]);
-        return { ...overview, members, subscriptions, actions };
+        return { ...overview, members, subscriptions, referrers, commissions, actions };
       }
     },
   ),
@@ -309,6 +311,24 @@ export const api = {
   }),
 
   updateSubscription: (id, input) => request(`/api/admin/subscriptions/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: input,
+  }),
+
+  referrers: () => withDemoFallback('referrers', () => structuredClone(demoAdmin.referrers || []))(
+    () => request('/api/admin/referrers'),
+  ),
+
+  createReferrer: (input) => request('/api/admin/referrers', { method: 'POST', body: input }),
+
+  updateReferrer: (id, input) => request(`/api/admin/referrers/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: input,
+  }),
+
+  commissions: () => withDemoFallback('commissions', () => structuredClone(demoAdmin.commissions || []))(
+    () => request('/api/admin/commissions'),
+  ),
+
+  updateCommission: (subscriptionId, input) => request(`/api/admin/commissions/${encodeURIComponent(subscriptionId)}`, {
     method: 'PATCH', body: input,
   }),
 

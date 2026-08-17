@@ -104,7 +104,7 @@ async function accessibilitySmoke(page) {
     return {
       titleMissing: !document.title.trim(),
       mainMissing: !document.querySelector('main'),
-      h1Count: document.querySelectorAll('h1').length,
+      h1Count: [...document.querySelectorAll('h1')].filter(visible).length,
       imagesWithoutAlt: [...document.querySelectorAll('img')].filter(
         (element) => visible(element) && !element.hasAttribute('alt'),
       ).length,
@@ -249,6 +249,174 @@ test.describe('致富投資 mobile and role journeys', () => {
     await expect(page.getByTestId('admin-booking').first()).toBeVisible();
 
     await expectNoHorizontalOverflow(page);
+  });
+
+  test('admin attributes a high-value member and settles an immutable referral commission', async ({ baseURL, browser }) => {
+    const contextOptions = { baseURL, locale: 'zh-TW', timezoneId: 'Asia/Taipei', viewport: { width: 390, height: 844 } };
+    const adminContext = await browser.newContext(contextOptions);
+    const memberContext = await browser.newContext(contextOptions);
+    const approvalReference = `PW-COM-APP-${Date.now()}`;
+    const payoutReference = `PW-COM-PAY-${Date.now()}`;
+    const evidenceReference = `PW-REF-${Date.now()}`;
+
+    try {
+      const adminPage = await adminContext.newPage();
+      await loginAs(adminPage, 'admin');
+      await adminPage.locator('[data-admin-nav="referrals"]:visible').first().click();
+      await expect(adminPage.getByTestId('referral-dashboard')).toBeVisible();
+
+      const visibleReferrers = adminPage.getByTestId('referral-row').filter({ visible: true });
+      await expect(visibleReferrers.first()).toBeVisible();
+      expect(await visibleReferrers.count()).toBeGreaterThanOrEqual(4);
+
+      const referrerCode = `PW-NETWORK-${Date.now()}`;
+      await adminPage.getByRole('button', { name: '新增引薦方' }).click();
+      await adminPage.getByLabel('引薦方顯示名稱').fill('Playwright 高階投資圈');
+      await adminPage.getByLabel('唯一引薦碼').fill(referrerCode);
+      await adminPage.getByLabel('簽約法定名稱').fill('Playwright 投資顧問股份有限公司');
+      await adminPage.getByLabel('聯絡人').fill('測試合作窗口');
+      await adminPage.getByLabel('聯絡信箱').fill('referral-e2e@example.invalid');
+      await adminPage.getByLabel('預設分潤率（bps）').fill('200');
+      await adminPage.getByLabel('協議生效日').fill('2026-01-01');
+      await adminPage.getByLabel('協議參考編號').fill(`PW-AGR-${Date.now()}`);
+      await adminPage.locator('#referrer-reason').fill('Playwright：建立多方高階投資人合作名冊');
+      await adminPage.getByTestId('referrer-save').click();
+      await expect(adminPage.locator('#referrer-dialog')).not.toBeVisible();
+      const createdReferrerRow = adminPage.getByTestId('referral-row').filter({ visible: true }).filter({ hasText: referrerCode });
+      await expect(createdReferrerRow).toBeVisible();
+      await createdReferrerRow.getByRole('button', { name: '編輯引薦方' }).click();
+      await adminPage.getByLabel('預設分潤率（bps）').fill('210');
+      await adminPage.locator('#referrer-reason').fill('Playwright：依補充協議調整未來認購比例');
+      await adminPage.getByTestId('referrer-save').click();
+      await expect(createdReferrerRow).toContainText('210 bps (2.1%)');
+
+      const memberPage = await memberContext.newPage();
+      await loginAs(memberPage, 'memberA');
+      const member = await memberSnapshot(memberPage);
+
+      await adminPage.locator('[data-admin-nav="members"]:visible').first().click();
+      await adminPage.locator('#member-search').fill(member.identity);
+      const memberCard = adminPage.locator('.mobile-record:visible').filter({ hasText: member.identity }).first();
+      await expect(memberCard).toBeVisible();
+      await memberCard.getByRole('button', { name: '確認／管理' }).click();
+
+      const referrerSelect = adminPage.getByTestId('member-referrer-select');
+      const currentReferrer = await referrerSelect.inputValue();
+      const snapshotReferrer = await referrerSelect.locator('option').evaluateAll((options, current) => (
+        options.map((option) => option.value).find((value) => value && value !== current) || ''
+      ), currentReferrer);
+      expect(snapshotReferrer).toBeTruthy();
+      await referrerSelect.selectOption(snapshotReferrer);
+      const expectedSnapshotName = (await referrerSelect.locator('option:checked').innerText()).split('｜')[0];
+      await adminPage.getByTestId('referral-evidence-reference').fill(evidenceReference);
+      await adminPage.locator('#member-reason').fill('Playwright：核對引薦證據並建立認購來源');
+      await adminPage.locator('#member-dialog').getByRole('button', { name: '確認並儲存' }).click();
+      await expect(adminPage.locator('#member-dialog')).not.toBeVisible();
+
+      await memberPage.locator('[data-nav-view="projects"]:visible').first().click().catch(async () => {
+        await memberPage.goto(paths.projects, { waitUntil: 'domcontentloaded' });
+      });
+      const project = memberPage.getByTestId('project-card').or(memberPage.locator('[data-project-card]')).first();
+      await expect(project).toBeVisible();
+      const openFromCard = project.getByTestId('subscription-open')
+        .or(project.getByRole('link', { name: /查看|詳情|認購/i }))
+        .or(project.getByRole('button', { name: /查看|詳情|認購/i }))
+        .first();
+      if (!(await clickIfVisible(openFromCard))) await project.click();
+      await clickIfVisible(actionable(memberPage, 'subscription-open', /提出認購意向|申請認購|開始申請/i));
+      const amount = '1900000';
+      const amountInput = memberPage.getByTestId('subscription-amount').or(memberPage.getByLabel(/申請金額|認購金額|新台幣/i)).first();
+      await amountInput.fill(amount);
+      const requiredCheckboxes = memberPage.locator('input[type="checkbox"][required]:visible');
+      for (let index = 0; index < (await requiredCheckboxes.count()); index += 1) await requiredCheckboxes.nth(index).check();
+      await actionable(memberPage, 'subscription-submit', /送出.*認購|提交.*申請/i).click();
+      await expect(memberPage.getByTestId('subscription-status').or(memberPage.getByText(/已送出|待營運確認|submitted/i)).first()).toBeVisible();
+      const memberSubscriptionsBeforeSettlement = await memberPage.evaluate(async () => (await fetch('/api/subscriptions')).json());
+      const createdSubscription = (memberSubscriptionsBeforeSettlement.data || memberSubscriptionsBeforeSettlement.subscriptions || [])
+        .find((item) => Number(item.requestedAmount ?? item.requestedAmountTwd) === Number(amount));
+      expect(createdSubscription?.id).toBeTruthy();
+      const subscriptionId = createdSubscription.id;
+
+      await adminPage.reload({ waitUntil: 'domcontentloaded' });
+      await expect(adminPage.getByTestId('admin-dashboard')).toBeVisible();
+      await adminPage.locator('[data-admin-nav="subscriptions"]:visible').first().click();
+      const subscriptionRow = adminPage.locator(`[data-testid="subscription-row"][data-subscription-id="${subscriptionId}"]:visible`);
+      await expect(subscriptionRow).toBeVisible();
+      const advanceSubscription = async (state, finalAmounts = false) => {
+        await subscriptionRow.getByTestId('subscription-confirm').click();
+        await adminPage.locator('#admin-subscription-status').selectOption(state);
+        if (finalAmounts) {
+          await adminPage.locator('#admin-approved-amount').fill(amount);
+          await adminPage.locator('#admin-received-amount').fill(amount);
+          await adminPage.locator('#admin-allocated-amount').fill(amount);
+          await adminPage.locator('#admin-refunded-amount').fill('0');
+          await adminPage.locator('#admin-partner-reference').fill(`PW-PARTNER-${Date.now()}`);
+        }
+        await adminPage.getByTestId('operation-reason').fill(`Playwright：推進至 ${state}`);
+        await adminPage.getByTestId('operation-confirm-submit').click();
+        await expect(adminPage.locator('#subscription-admin-dialog')).not.toBeVisible();
+      };
+      await advanceSubscription('operations_confirmed');
+      await advanceSubscription('partner_review');
+      await advanceSubscription('approved', true);
+
+      await adminPage.locator('[data-admin-nav="referrals"]:visible').first().click();
+      const commissionRow = adminPage.locator(`[data-testid="commission-row"][data-subscription-id="${subscriptionId}"]:visible`);
+      await expect(commissionRow.locator('.status[data-status="accrued"]')).toBeVisible();
+      await expect(commissionRow.locator('.snapshot-name')).toHaveText(expectedSnapshotName);
+
+      await adminPage.locator('[data-admin-nav="members"]:visible').first().click();
+      await adminPage.locator('#member-search').fill(member.identity);
+      await adminPage.locator('.mobile-record:visible').filter({ hasText: member.identity }).first().getByRole('button', { name: '確認／管理' }).click();
+      const futureReferrerSelect = adminPage.getByTestId('member-referrer-select');
+      const futureReferrer = await futureReferrerSelect.locator('option').evaluateAll((options, previous) => (
+        options.map((option) => option.value).find((value) => value && value !== previous) || ''
+      ), snapshotReferrer);
+      await futureReferrerSelect.selectOption(futureReferrer);
+      await adminPage.getByTestId('referral-evidence-reference').fill(`${evidenceReference}-FUTURE`);
+      await adminPage.locator('#member-reason').fill('Playwright：改派未來認購，不回寫既有快照');
+      await adminPage.locator('#member-dialog').getByRole('button', { name: '確認並儲存' }).click();
+      await expect(adminPage.locator('#member-dialog')).not.toBeVisible();
+
+      await adminPage.locator('[data-admin-nav="referrals"]:visible').first().click();
+      await expect(commissionRow.locator('.snapshot-name')).toHaveText(expectedSnapshotName);
+
+      await commissionRow.getByRole('button', { name: '審核分潤' }).click();
+      await expect(adminPage.getByTestId('commission-action')).toHaveValue('approve');
+      await adminPage.getByTestId('commission-approval-reference').fill(approvalReference);
+      await adminPage.getByTestId('commission-reason').fill('Playwright：依協議與最終分配金額核准');
+      await adminPage.getByTestId('commission-save').click();
+      await expect(adminPage.locator('#commission-dialog')).not.toBeVisible();
+      await expect(commissionRow.locator('.status[data-status="approved"]')).toBeVisible();
+
+      await commissionRow.getByRole('button', { name: '登錄付款' }).click();
+      await expect(adminPage.getByTestId('commission-action')).toHaveValue('pay');
+      await adminPage.getByLabel('付款參考編號').fill(payoutReference);
+      await adminPage.getByTestId('commission-reason').fill('Playwright：完成財務付款並登錄銀行參考');
+      await adminPage.getByTestId('commission-save').click();
+      await expect(adminPage.locator('#commission-dialog')).not.toBeVisible();
+      await expect(commissionRow.locator('.status[data-status="paid"]')).toBeVisible();
+      await expectNoHorizontalOverflow(adminPage);
+      expect(await accessibilitySmoke(adminPage)).toEqual({
+        titleMissing: false,
+        mainMissing: false,
+        h1Count: 1,
+        imagesWithoutAlt: 0,
+        unnamedActions: 0,
+        unlabeledControls: 0,
+      });
+
+      await memberPage.reload({ waitUntil: 'domcontentloaded' });
+      await expect(memberPage.locator('main')).not.toContainText(approvalReference);
+      await expect(memberPage.locator('main')).not.toContainText(payoutReference);
+      await expect(memberPage.getByTestId('commission-row')).toHaveCount(0);
+      const memberSubscriptions = await memberPage.evaluate(async () => (await fetch('/api/subscriptions')).json());
+      expect(JSON.stringify(memberSubscriptions)).not.toMatch(/commission(State|Approval|Payment|Accrued|Basis)|referralSnapshot/);
+      await expectNoHorizontalOverflow(memberPage);
+    } finally {
+      await adminContext.close();
+      await memberContext.close();
+    }
   });
 
   test('member submits a subscription and operations confirms it', async ({ baseURL, browser }) => {

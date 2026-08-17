@@ -72,6 +72,13 @@ test('members can only list their own subscriptions', async () => {
   assert.ok(two.subscriptions.length > 0);
   assert.ok(one.subscriptions.every((item) => item.memberId === 'member-001'));
   assert.ok(two.subscriptions.every((item) => item.memberId === 'member-002'));
+  const me = await (await app.request('/api/auth/me', { headers: { cookie: memberOneCookie } })).json();
+  const memberSerialization = JSON.stringify({ me, one, two });
+  for (const privateField of [
+    'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd',
+    'commissionApproval', 'commissionPayment', 'commissionVoidReason',
+    'referralSnapshot', 'referralAttribution', 'evidenceReference', 'referrerName',
+  ]) assert.equal(memberSerialization.includes(privateField), false, `${privateField} must remain admin-only`);
   assert.equal(store.data.subscriptions.length, 25);
 });
 
@@ -276,4 +283,236 @@ test('admin CSV and audit endpoints are never available to a member', async () =
   const csv = await app.request('/api/admin/export/subscriptions.csv', { headers: { cookie: admin } });
   assert.equal(csv.status, 200);
   assert.match(await csv.text(), /requestedAmountTwd/);
+});
+
+test('activation only claims a matching effective referral code and never self-verifies it', async () => {
+  const { app, store } = await fixture();
+  const known = await login(app, 'member', 'member-026');
+  const unknown = await login(app, 'member', 'member-027');
+  const activation = (cookie, sourceCode) => app.request('/api/activation', {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      fullName: 'DEMO 引薦測試', phone: '0912345678', sourceCode,
+      sourceName: '轉傳或群組來源', lineFriendConfirmed: true, privacyConsent: true,
+    }),
+  });
+
+  const claimed = await activation(known, 'xuefen');
+  assert.equal(claimed.status, 201);
+  const claimedBody = await claimed.json();
+  assert.equal(claimedBody.activation.referralClaimed, true);
+  assert.equal(JSON.stringify(claimedBody).includes('referralAttribution'), false);
+  assert.equal(JSON.stringify(claimedBody).includes('evidenceReference'), false);
+  assert.equal(store.data.members.find((item) => item.id === 'member-026').referralAttribution.state, 'claimed');
+
+  const noMatch = await activation(unknown, 'SHARED-UNKNOWN-CODE');
+  assert.equal(noMatch.status, 201);
+  assert.equal(store.data.members.find((item) => item.id === 'member-027').referralAttribution, null);
+});
+
+test('admin referrer registry enforces unique codes, valid rules, audit events and role isolation', async () => {
+  const { app, store } = await fixture();
+  const member = await login(app, 'member', 'member-001');
+  const admin = await login(app, 'admin');
+  for (const [method, path] of [
+    ['GET', '/api/admin/referrers'],
+    ['POST', '/api/admin/referrers'],
+    ['PATCH', '/api/admin/referrers/referrer-01'],
+    ['GET', '/api/admin/commissions'],
+  ]) assert.equal((await app.request(path, { method, headers: { cookie: member } })).status, 403);
+
+  const input = {
+    code: 'new-circle', displayName: '新高階投資圈', legalName: '新高階投資圈有限公司',
+    contactName: '示意窗口', contactEmail: 'partner@example.com', status: 'active',
+    defaultCommissionRateBps: 425, commissionBasis: 'allocated_amount', agreementReference: 'AGR-NEW-01',
+    effectiveAt: '2026-01-01T00:00:00.000Z', expiresAt: null, reason: '完成合作方建檔',
+  };
+  const missingCreateReason = await app.request('/api/admin/referrers', {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ ...input, reason: '   ' }),
+  });
+  assert.equal(missingCreateReason.status, 409);
+  assert.equal((await missingCreateReason.json()).error.code, 'referrer_reason_required');
+  const createdResponse = await app.request('/api/admin/referrers', {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify(input),
+  });
+  assert.equal(createdResponse.status, 201);
+  const created = (await createdResponse.json()).referrer;
+  assert.equal(created.code, 'NEW-CIRCLE');
+  assert.equal(created.defaultCommissionRateBps, 425);
+
+  const missingPatchReason = await app.request(`/api/admin/referrers/${created.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ displayName: '不應寫入' }),
+  });
+  assert.equal(missingPatchReason.status, 409);
+  assert.equal((await missingPatchReason.json()).error.code, 'referrer_reason_required');
+  assert.equal(store.data.referrers.find((item) => item.id === created.id).displayName, input.displayName);
+
+  const duplicate = await app.request('/api/admin/referrers', {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ ...input, code: 'NEW-CIRCLE' }),
+  });
+  assert.equal(duplicate.status, 409);
+  assert.equal((await duplicate.json()).error.code, 'duplicate_referrer_code');
+
+  const disabledResponse = await app.request(`/api/admin/referrers/${created.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ status: 'disabled', reason: '合作到期' }),
+  });
+  assert.equal(disabledResponse.status, 200);
+  assert.equal((await disabledResponse.json()).referrer.status, 'disabled');
+  const cannotVerifyDisabled = await app.request('/api/admin/members/member-025', {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      referralAttribution: { referrerId: created.id, evidenceReference: 'DISABLED-REF' },
+      reason: 'Should be rejected because agreement is disabled',
+    }),
+  });
+  assert.equal(cannotVerifyDisabled.status, 409);
+  assert.equal((await cannotVerifyDisabled.json()).error.code, 'referrer_not_effective');
+  assert.equal((await app.request('/api/admin/export/referrers.csv', { headers: { cookie: member } })).status, 403);
+  assert.equal((await app.request('/api/admin/export/commissions.csv', { headers: { cookie: member } })).status, 403);
+  assert.ok(store.data.audits.some((item) => item.entityType === 'referrer' && item.entityId === created.id));
+});
+
+test('verified member attribution affects only future immutable subscription snapshots', async () => {
+  const { app, store } = await fixture();
+  const admin = await login(app, 'admin');
+  const member = await login(app, 'member', 'member-001');
+  const historical = structuredClone(store.data.subscriptions.find((item) => item.memberId === 'member-001'));
+
+  const verified = await app.request('/api/admin/members/member-001', {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      referralAttribution: { referrerId: 'referrer-02', evidenceReference: 'INTRO-MAIL-2026-001' },
+      reason: '核對引薦郵件與雙方確認紀錄',
+    }),
+  });
+  assert.equal(verified.status, 200);
+  const attribution = (await verified.json()).member.referralAttribution;
+  assert.equal(attribution.state, 'verified');
+  assert.equal(attribution.verifiedBy, 'admin-xuefen-demo');
+  assert.equal((await app.request('/api/admin/members/member-001', {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ referralAttribution: null }),
+  })).status, 409);
+
+  const createdResponse = await app.request('/api/subscriptions', {
+    method: 'POST',
+    headers: { cookie: member, 'content-type': 'application/json', 'idempotency-key': 'referral-snapshot-001' },
+    body: JSON.stringify({ projectId: 'project-01', requestedAmountTwd: 500_000, riskAcknowledged: true }),
+  });
+  assert.equal(createdResponse.status, 201);
+  const created = (await createdResponse.json()).subscription;
+  assert.equal('referralSnapshot' in created, false);
+  assert.equal('commissionState' in created, false);
+  const createdStored = store.data.subscriptions.find((item) => item.id === created.id);
+  assert.equal(createdStored.referralSnapshot.referrerId, 'referrer-02');
+  assert.equal(createdStored.referralSnapshot.commissionRateBps, 250);
+  assert.equal(createdStored.commissionState, 'pending');
+
+  await app.request('/api/admin/referrers/referrer-02', {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ defaultCommissionRateBps: 999, displayName: '更名後 Alpha', reason: '新約僅適用未來成交' }),
+  });
+  await app.request('/api/admin/members/member-001', {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      referralAttribution: { referrerId: 'referrer-03', evidenceReference: 'TRANSFER-2026-002' },
+      reason: '未來案件改由其他合作方引薦',
+    }),
+  });
+  const stored = store.data.subscriptions.find((item) => item.id === created.id);
+  assert.equal(stored.referralSnapshot.referrerId, 'referrer-02');
+  assert.equal(stored.referralSnapshot.referrerName, '高階投資人 Alpha 會');
+  assert.equal(stored.referralSnapshot.commissionRateBps, 250);
+  assert.deepEqual(store.data.subscriptions.find((item) => item.id === historical.id).referralSnapshot, historical.referralSnapshot);
+});
+
+test('commission actions are server-stamped, evidence-gated, forward-only and lock approved amounts', async () => {
+  const { app, store } = await fixture();
+  const admin = await login(app, 'admin');
+  const member = await login(app, 'member', 'member-001');
+  const accrued = store.data.subscriptions.find((item) => item.commissionState === 'accrued' && item.allocationState === 'final');
+  assert.ok(accrued);
+
+  assert.equal((await app.request(`/api/admin/commissions/${accrued.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'approve', approvalReference: 'APP-API-1' }),
+  })).status, 409);
+  const approvedResponse = await app.request(`/api/admin/commissions/${accrued.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'approve', approvalReference: 'APP-API-1', reason: '財務覆核完成' }),
+  });
+  assert.equal(approvedResponse.status, 200);
+  const approved = (await approvedResponse.json()).commission;
+  assert.deepEqual(approved.commissionApproval, {
+    approvedBy: 'admin-xuefen-demo', reference: 'APP-API-1', approvedAt: approved.commissionApproval.approvedAt,
+  });
+
+  const changedAmount = accrued.requestedAmountTwd + 100_000;
+  const locked = await app.request(`/api/admin/subscriptions/${accrued.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestedAmountTwd: changedAmount, approvedAmountTwd: changedAmount,
+      receivedAmountTwd: changedAmount, allocatedAmountTwd: changedAmount,
+      reason: '嘗試調整已核准分潤的配置金額',
+    }),
+  });
+  assert.equal(locked.status, 409);
+  assert.equal((await locked.json()).error.code, 'commission_amount_locked');
+
+  assert.equal((await app.request(`/api/admin/commissions/${accrued.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'pay', reason: '準備付款' }),
+  })).status, 409);
+  const paid = await app.request(`/api/admin/commissions/${accrued.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'pay', payoutReference: 'BANK-API-1', reason: '匯款完成' }),
+  });
+  assert.equal(paid.status, 200);
+  assert.equal((await paid.json()).commission.commissionPayment.paidBy, 'admin-xuefen-demo');
+  assert.equal((await app.request(`/api/admin/commissions/${accrued.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'void', voidReason: '不應允許', reason: '嘗試作廢已付款分潤' }),
+  })).status, 409);
+
+  const voidable = store.data.subscriptions.find((item) => item.id !== accrued.id && item.commissionState === 'accrued');
+  assert.ok(voidable);
+  assert.equal((await app.request(`/api/admin/commissions/${voidable.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'void', reason: '成交撤回' }),
+  })).status, 409);
+  const voided = await app.request(`/api/admin/commissions/${voidable.id}`, {
+    method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'void', voidReason: '合作方確認成交撤回', reason: '附上撤回紀錄' }),
+  });
+  assert.equal(voided.status, 200);
+  assert.equal((await voided.json()).commission.commissionState, 'void');
+  assert.equal((await app.request('/api/admin/commissions', { headers: { cookie: member } })).status, 403);
+});
+
+test('dashboard and CSV exports include auditable referral and commission data', async () => {
+  const { app, store } = await fixture();
+  const admin = await login(app, 'admin');
+  const dashboard = (await (await app.request('/api/admin/dashboard', { headers: { cookie: admin } })).json()).dashboard;
+  assert.equal(dashboard.kpis.referrerCount, 4);
+  assert.equal(dashboard.kpis.attributedMemberCount, 24);
+  assert.equal(dashboard.referrers.length, 4);
+  assert.equal(dashboard.commissions.length, 25);
+  assert.equal(
+    dashboard.kpis.commissionPaidAmountTwd,
+    store.data.subscriptions.filter((item) => item.commissionState === 'paid')
+      .reduce((sum, item) => sum + item.commissionAccruedAmountTwd, 0),
+  );
+  for (const [resource, expected] of [
+    ['referrers', 'agreementReference'],
+    ['commissions', 'commissionAccruedAmountTwd'],
+  ]) {
+    const response = await app.request(`/api/admin/export/${resource}.csv`, { headers: { cookie: admin } });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), new RegExp(expected));
+  }
 });

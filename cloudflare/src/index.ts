@@ -41,6 +41,9 @@ const fixedRoutes = new Map<string, RouteMatch>([
   ['GET /api/admin/members', { operation: 'adminList', access: 'admin', params: { resource: 'members' } }],
   ['GET /api/admin/projects', { operation: 'adminList', access: 'admin', params: { resource: 'projects' } }],
   ['GET /api/admin/subscriptions', { operation: 'adminList', access: 'admin', params: { resource: 'subscriptions' } }],
+  ['GET /api/admin/referrers', { operation: 'adminList', access: 'admin', params: { resource: 'referrers' } }],
+  ['POST /api/admin/referrers', { operation: 'adminCreateReferrer', access: 'admin' }],
+  ['GET /api/admin/commissions', { operation: 'adminList', access: 'admin', params: { resource: 'commissions' } }],
   ['GET /api/admin/actions', { operation: 'adminDashboard', access: 'admin' }],
   ['GET /api/admin/notifications', { operation: 'adminList', access: 'admin', params: { resource: 'notifications' } }],
   ['POST /api/admin/notifications', { operation: 'adminCreateBulkNotification', access: 'admin' }],
@@ -48,8 +51,12 @@ const fixedRoutes = new Map<string, RouteMatch>([
   ['GET /api/admin/audits', { operation: 'adminList', access: 'admin', params: { resource: 'audits' } }],
   ['GET /api/admin/exports/members.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'members' } }],
   ['GET /api/admin/exports/subscriptions.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'subscriptions' } }],
+  ['GET /api/admin/exports/referrers.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'referrers' } }],
+  ['GET /api/admin/exports/commissions.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'commissions' } }],
   ['GET /api/admin/export/members.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'members' } }],
   ['GET /api/admin/export/subscriptions.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'subscriptions' } }],
+  ['GET /api/admin/export/referrers.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'referrers' } }],
+  ['GET /api/admin/export/commissions.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'commissions' } }],
 ]);
 
 function matchProxyRoute(method: string, pathname: string): RouteMatch | null {
@@ -60,6 +67,8 @@ function matchProxyRoute(method: string, pathname: string): RouteMatch | null {
     ['PATCH', /^\/api\/admin\/members\/([^/]+)$/, 'adminPatchMember', 'admin', ['memberId']],
     ['PATCH', /^\/api\/admin\/projects\/([^/]+)$/, 'adminPatchProject', 'admin', ['projectId']],
     ['PATCH', /^\/api\/admin\/subscriptions\/([^/]+)$/, 'adminPatchSubscription', 'admin', ['subscriptionId']],
+    ['PATCH', /^\/api\/admin\/referrers\/([^/]+)$/, 'adminPatchReferrer', 'admin', ['referrerId']],
+    ['PATCH', /^\/api\/admin\/commissions\/([^/]+)$/, 'adminPatchCommission', 'admin', ['subscriptionId']],
     ['POST', /^\/api\/admin\/notifications\/([^/]+)\/send$/, 'adminApproveNotification', 'admin', ['notificationId']],
   ];
   for (const [expectedMethod, pattern, operation, access, names] of patterns) {
@@ -199,6 +208,25 @@ async function requestPayload(request: Request, match: RouteMatch, session: Sess
     } : patch;
     return { ...base, ...params, patch: normalizedPatch, reason };
   }
+  if (match.operation === 'adminCreateReferrer') {
+    const { reason, ...referrer } = body;
+    return { ...base, referrer, reason };
+  }
+  if (match.operation === 'adminPatchReferrer') {
+    const { reason, ...patch } = body;
+    return { ...base, ...params, patch, reason };
+  }
+  if (match.operation === 'adminPatchCommission') {
+    return {
+      ...base,
+      ...params,
+      action: body.action,
+      approvalReference: body.approvalReference,
+      payoutReference: body.payoutReference,
+      voidReason: body.voidReason,
+      reason: body.reason,
+    };
+  }
   if (match.operation === 'adminApproveNotification') return { ...base, ...params, reason: body.reason };
   if (match.operation === 'adminCreateBulkNotification') {
     return {
@@ -243,10 +271,25 @@ async function proxy(request: Request, env: GatewayEnv, match: RouteMatch, sessi
       },
     });
   }
-  return new Response(JSON.stringify(result), {
+  const serializedResult = match.access === 'member' ? stripMemberPrivateFields(result) : result;
+  return new Response(JSON.stringify(serializedResult), {
     status: result.ok ? 200 : appsScriptErrorStatus(result.error.code),
     headers: JSON_HEADERS,
   });
+}
+
+function stripMemberPrivateFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripMemberPrivateFields);
+  if (!value || typeof value !== 'object') return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const normalized = key.toLowerCase();
+    if (normalized.startsWith('commission') || normalized.startsWith('referralsnapshot') ||
+        normalized.startsWith('referralattribution') ||
+        ['evidencereference', 'referrername'].includes(normalized)) continue;
+    result[key] = stripMemberPrivateFields(child);
+  }
+  return result;
 }
 
 function isCsvExport(value: unknown): value is { filename: string; csv: string } {
@@ -459,7 +502,7 @@ async function handle(request: Request, env: GatewayEnv, ctx: ExecutionContext):
   if (csrfFailure) return csrfFailure;
   if (request.method === 'GET' && url.pathname === '/api/auth/me') {
     if (!session) return Response.json({ ok: true, data: { authenticated: false, role: 'visitor', member: null } });
-    let member = {
+    let member: Record<string, unknown> = {
       id: session.memberId || `line:${session.lineUserId}`,
       displayName: session.displayName,
       pictureUrl: session.pictureUrl,
@@ -476,6 +519,7 @@ async function handle(request: Request, env: GatewayEnv, ctx: ExecutionContext):
       });
       if (profile.ok && profile.data.member) member = { ...member, ...profile.data.member };
     }
+    member = stripMemberPrivateFields(member) as Record<string, unknown>;
     return Response.json({
       ok: true,
       data: {

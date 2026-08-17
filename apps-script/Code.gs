@@ -86,6 +86,21 @@ function setupWorkbook(spreadsheetId) {
   return { spreadsheetId: workbook.getId(), url: workbook.getUrl(), sheets: Object.keys(ZF_SCHEMA) };
 }
 
+/** One-time, append-only migration for an existing pre-referral workbook. */
+function migrateReferralCommissionSchema() {
+  var actor = assertAdminIdentity_();
+  return withStoreLock_(function () {
+    var workbook = getWorkbook_();
+    migrateReferralCommissionSchema_(workbook);
+    return {
+      ok: true,
+      migratedBy: actor.email,
+      spreadsheetId: workbook.getId(),
+      sheets: Object.keys(ZF_SCHEMA)
+    };
+  });
+}
+
 /** Explicit deployment preflight. Returns no secret material. */
 function validateDeploymentConfiguration() {
   var configuration = adminConfiguration_();
@@ -387,6 +402,9 @@ function dispatchOperation_(operation, payload) {
     adminPatchMember: operationAdminPatchMember_,
     adminPatchProject: operationAdminPatchProject_,
     adminPatchSubscription: operationAdminPatchSubscription_,
+    adminCreateReferrer: operationAdminCreateReferrer_,
+    adminPatchReferrer: operationAdminPatchReferrer_,
+    adminPatchCommission: operationAdminPatchCommission_,
     adminApproveNotification: operationAdminApproveNotification_,
     adminCreateBulkNotification: operationAdminCreateBulkNotification_,
     adminProcessNotifications: operationAdminProcessNotifications_,
@@ -570,6 +588,7 @@ function operationUpsertLineMember_(payload, context) {
     qualificationApproval: null,
     tier: 'free',
     projectAccess: [],
+    referralAttribution: null,
     createdAt: now
   };
   next.displayName = assertRequiredString_(input.displayName, 'member.displayName', 100);
@@ -623,6 +642,7 @@ function operationListSubscriptions_(payload, context) {
   var records = storeList_('Subscriptions').filter(function (record) {
     return memberId ? record.memberId === memberId : true;
   });
+  if (context.role !== 'admin') records = records.map(sanitizeSubscriptionForMember_);
   return { subscriptions: records };
 }
 
@@ -690,7 +710,7 @@ function operationCreateActivation_(payload, context) {
     lineUserId: member.lineUserId,
     fullName: fullName,
     phone: phone,
-    sourceCode: assertRequiredString_(input.sourceCode, 'activation.sourceCode', 100),
+    sourceCode: normalizeReferralCode_(input.sourceCode),
     sourceName: sourceName,
     identityNote: normalizeOptionalString_(input.identityNote, 1000),
     lineFriendConfirmed: true,
@@ -706,6 +726,12 @@ function operationCreateActivation_(payload, context) {
   member.legalName = fullName;
   member.phone = phone;
   member.sourceGroup = sourceName;
+  var matchedReferrer = storeList_('Referrers').filter(function (referrer) {
+    return referrer.code === activation.sourceCode && isReferrerEffective_(referrer, now);
+  })[0] || null;
+  if (!member.referralAttribution || member.referralAttribution.state !== 'verified') {
+    member.referralAttribution = matchedReferrer ? referralClaim_(matchedReferrer, now) : null;
+  }
   member.updatedAt = now;
   storePut_('Members', member);
   appendAudit_({
@@ -722,8 +748,14 @@ function operationCreateActivation_(payload, context) {
   appendAudit_({
     entityType: 'member', entityId: member.id, action: 'member.activation_profile_updated',
     actor: actorFromContext_(context),
-    before: { legalName: previousMember.legalName || '', sourceGroup: previousMember.sourceGroup || '' },
-    after: { legalName: member.legalName, sourceGroup: member.sourceGroup },
+    before: {
+      legalName: previousMember.legalName || '', sourceGroup: previousMember.sourceGroup || '',
+      referralAttribution: previousMember.referralAttribution || null
+    },
+    after: {
+      legalName: member.legalName, sourceGroup: member.sourceGroup,
+      referralAttribution: member.referralAttribution
+    },
     requestId: context.requestId
   });
   return { activation: activation };
@@ -743,7 +775,7 @@ function operationCreateSubscription_(payload, context) {
       audit.actor && audit.actor.id === (context.actorId || context.memberId);
   })[0];
   if (priorAudit && priorAudit.entityId) {
-    return { subscription: requireRecord_('Subscriptions', priorAudit.entityId), replayed: true };
+    return { subscription: sanitizeSubscriptionForMember_(requireRecord_('Subscriptions', priorAudit.entityId)), replayed: true };
   }
   var requested = normalizeTwd_(payload.requestedAmountTwd, 'requestedAmountTwd');
   if (payload.riskAcknowledged !== true) {
@@ -755,6 +787,7 @@ function operationCreateSubscription_(payload, context) {
     throw domainError_('Requested amount does not match project minimum/increment rules', 'invalid_amount', 409);
   }
   var createdAt = nowIso_();
+  var referralSnapshot = referralSnapshotForMember_(member, storeList_('Referrers'), createdAt);
   var subscription = createSubscriptionRecord_({
     id: createId_('subscription'),
     demo: false,
@@ -763,7 +796,8 @@ function operationCreateSubscription_(payload, context) {
     requestedAmountTwd: requested,
     riskAcknowledged: true,
     riskAcknowledgedAt: createdAt,
-    riskDisclosureVersion: 'draft-0.1-2026-08-18'
+    riskDisclosureVersion: 'draft-0.1-2026-08-18',
+    referralSnapshot: referralSnapshot
   }, createdAt);
   storeAppend_('Subscriptions', subscription);
   appendAudit_({
@@ -772,7 +806,7 @@ function operationCreateSubscription_(payload, context) {
     requestId: idempotencyKey
   });
   enqueueMemberNotification_(member.id, 'subscription_submitted', 'subscription', subscription.id, actorFromContext_(context), idempotencyKey);
-  return { subscription: subscription, replayed: false };
+  return { subscription: sanitizeSubscriptionForMember_(subscription), replayed: false };
 }
 
 function operationAuthorizeDeck_(payload, context) {
@@ -836,7 +870,9 @@ function enrichSubscriptionsForAdmin_(subscriptions, members, projects) {
     var project = projectMap[record.projectId] || {};
     return Object.assign({}, record, {
       memberName: member.legalName || member.displayName || record.memberId,
-      projectName: project.displayName || record.projectId
+      projectName: project.displayName || record.projectId,
+      referrerName: record.referralSnapshot ? record.referralSnapshot.referrerName : '',
+      referrerCode: record.referralSnapshot ? record.referralSnapshot.referralCode : ''
     });
   });
 }
@@ -848,26 +884,91 @@ function operationAdminDashboard_(payload, context) {
   var subscriptions = storeList_('Subscriptions');
   var enrichedSubscriptions = enrichSubscriptionsForAdmin_(subscriptions, members, projects);
   var notifications = storeList_('Notifications');
+  var referrers = storeList_('Referrers');
+  var referrerMap = {};
+  referrers.forEach(function (referrer) { referrerMap[referrer.id] = referrer; });
   var sum = function (field) {
     return subscriptions.reduce(function (total, record) { return total + Number(record[field] || 0); }, 0);
   };
+  var overview = {
+    memberCount: members.length,
+    pendingMemberCount: members.filter(function (record) { return record.membershipState === 'pending'; }).length,
+    needsInformationCount: members.filter(function (record) { return record.qualificationState === 'needs_information'; }).length,
+    pendingPartnerReviewCount: subscriptions.filter(function (record) { return record.subscriptionState === 'partner_review'; }).length,
+    notificationAttentionCount: notifications.filter(function (record) {
+      return record.state === 'pending_manual' || record.state === 'failed';
+    }).length,
+    referrerCount: referrers.length,
+    attributedMemberCount: members.filter(function (record) {
+      return record.referralAttribution && record.referralAttribution.state === 'verified';
+    }).length,
+    commissionAccruedAmountTwd: subscriptions.filter(function (record) {
+      return record.commissionState === 'accrued';
+    }).reduce(function (total, record) { return total + Number(record.commissionAccruedAmountTwd || 0); }, 0),
+    commissionApprovedAmountTwd: subscriptions.filter(function (record) {
+      return record.commissionState === 'approved';
+    }).reduce(function (total, record) { return total + Number(record.commissionAccruedAmountTwd || 0); }, 0),
+    commissionPaidAmountTwd: subscriptions.filter(function (record) {
+      return record.commissionState === 'paid';
+    }).reduce(function (total, record) { return total + Number(record.commissionAccruedAmountTwd || 0); }, 0),
+    requestedAmountTwd: sum('requestedAmountTwd'),
+    approvedAmountTwd: sum('approvedAmountTwd'),
+    receivedAmountTwd: sum('receivedAmountTwd'),
+    allocatedAmountTwd: sum('allocatedAmountTwd'),
+    refundedAmountTwd: sum('refundedAmountTwd')
+  };
+  var enrichedMembers = members.map(function (member) {
+    var memberSubscriptions = subscriptions.filter(function (record) { return record.memberId === member.id; });
+    var referrer = member.referralAttribution ? referrerMap[member.referralAttribution.referrerId] : null;
+    return Object.assign({}, member, {
+      name: member.legalName || member.displayName,
+      source: member.sourceGroup,
+      membership: member.membershipState,
+      qualification: member.qualificationState,
+      lineFriend: member.lineFriendshipState === 'friend',
+      referrerName: referrer ? referrer.displayName : null,
+      requested: memberSubscriptions.reduce(function (total, record) { return total + Number(record.requestedAmountTwd || 0); }, 0),
+      received: memberSubscriptions.reduce(function (total, record) { return total + Number(record.receivedAmountTwd || 0); }, 0)
+    });
+  });
+  var commissions = enrichedSubscriptions.filter(function (record) { return Boolean(record.referralSnapshot); });
+  var actions = [
+    { id: 'membership-pending', type: '會員確認', priority: overview.pendingMemberCount ? 'urgent' : 'normal', title: '確認 ' + overview.pendingMemberCount + ' 位新會員', count: overview.pendingMemberCount },
+    { id: 'partner-review', type: '認購審核', priority: overview.pendingPartnerReviewCount ? 'urgent' : 'normal', title: overview.pendingPartnerReviewCount + ' 筆待登錄合作方結果', count: overview.pendingPartnerReviewCount },
+    { id: 'funding-followup', type: '入金追蹤', priority: 'normal', title: '追蹤 ' + subscriptions.filter(function (record) { return record.fundingState === 'unpaid' || record.fundingState === 'partial'; }).length + ' 筆未完成入金', count: subscriptions.filter(function (record) { return record.fundingState === 'unpaid' || record.fundingState === 'partial'; }).length },
+    { id: 'notification-attention', type: '通知異常', priority: overview.notificationAttentionCount ? 'urgent' : 'normal', title: overview.notificationAttentionCount + ' 則 LINE 通知待處理', count: overview.notificationAttentionCount }
+  ];
   return {
     generatedAt: nowIso_(),
+    overview: overview,
     kpis: {
+      totalMembers: overview.memberCount,
       members: members.length,
-      pendingMembers: members.filter(function (record) { return record.membershipState === 'pending'; }).length,
+      pendingMembers: overview.pendingMemberCount,
       qualifiedMembers: members.filter(function (record) { return record.qualificationState === 'approved'; }).length,
       projects: projects.length,
       subscriptions: subscriptions.length,
-      requestedAmountTwd: sum('requestedAmountTwd'),
-      approvedAmountTwd: sum('approvedAmountTwd'),
-      receivedAmountTwd: sum('receivedAmountTwd'),
-      allocatedAmountTwd: sum('allocatedAmountTwd'),
-      refundedAmountTwd: sum('refundedAmountTwd'),
-      notificationActions: notifications.filter(function (record) {
-        return record.state === 'pending_manual' || record.state === 'failed';
-      }).length
+      requestedAmount: overview.requestedAmountTwd,
+      approvedAmount: overview.approvedAmountTwd,
+      receivedAmount: overview.receivedAmountTwd,
+      allocatedAmount: overview.allocatedAmountTwd,
+      requestedAmountTwd: overview.requestedAmountTwd,
+      approvedAmountTwd: overview.approvedAmountTwd,
+      receivedAmountTwd: overview.receivedAmountTwd,
+      allocatedAmountTwd: overview.allocatedAmountTwd,
+      refundedAmountTwd: overview.refundedAmountTwd,
+      referrerCount: overview.referrerCount,
+      attributedMemberCount: overview.attributedMemberCount,
+      commissionAccruedAmountTwd: overview.commissionAccruedAmountTwd,
+      commissionApprovedAmountTwd: overview.commissionApprovedAmountTwd,
+      commissionPaidAmountTwd: overview.commissionPaidAmountTwd,
+      notificationActions: overview.notificationAttentionCount
     },
+    referrers: referrers,
+    members: enrichedMembers,
+    subscriptions: enrichedSubscriptions,
+    commissions: commissions,
+    actions: actions,
     recentSubscriptions: enrichedSubscriptions.slice().sort(function (a, b) {
       return String(b.updatedAt).localeCompare(String(a.updatedAt));
     }).slice(0, 12),
@@ -878,6 +979,9 @@ function operationAdminDashboard_(payload, context) {
       }).slice(0, 20),
       notifications: notifications.filter(function (record) {
         return record.state === 'pending_manual' || record.state === 'failed';
+      }).slice(0, 20),
+      commissions: enrichedSubscriptions.filter(function (record) {
+        return record.commissionState === 'accrued' || record.commissionState === 'approved';
       }).slice(0, 20)
     }
   };
@@ -885,12 +989,23 @@ function operationAdminDashboard_(payload, context) {
 
 var ZF_ADMIN_RESOURCES = Object.freeze({
   members: 'Members', projects: 'Projects', subscriptions: 'Subscriptions',
-  bookings: 'Bookings', activations: 'Activations', notifications: 'Notifications', audits: 'Audits'
+  bookings: 'Bookings', activations: 'Activations', notifications: 'Notifications', audits: 'Audits',
+  referrers: 'Referrers'
 });
 
 function operationAdminList_(payload, context) {
   assertRole_(context, ['admin']);
   var resource = assertRequiredString_(payload.resource, 'resource', 40).toLowerCase();
+  if (resource === 'commissions') {
+    var commissionRecords = enrichSubscriptionsForAdmin_(storeList_('Subscriptions')).filter(function (record) {
+      return record.referralSnapshot && record.commissionState !== 'not_applicable';
+    });
+    return {
+      resource: resource,
+      records: commissionRecords.slice(0, Math.max(1, Math.min(Number(payload.limit) || 100, 500))),
+      total: commissionRecords.length
+    };
+  }
   var sheetName = ZF_ADMIN_RESOURCES[resource];
   if (!sheetName) throw domainError_('Unsupported admin resource', 'invalid_request');
   var limit = Math.max(1, Math.min(Number(payload.limit) || 100, 500));
@@ -932,6 +1047,16 @@ function operationAdminPatchMember_(payload, context) {
       if (validProjectIds.indexOf(projectId) === -1) throw domainError_('Unknown project in access list', 'not_found', 404);
     });
     next.projectAccess = patch.projectAccess.slice();
+  }
+  if (patch.referralAttribution !== undefined) {
+    assertRequiredString_(payload.reason, 'reason', 1000);
+    next.referralAttribution = verifyReferralAttribution_(
+      current.referralAttribution,
+      patch.referralAttribution,
+      storeList_('Referrers'),
+      actorFromContext_(context),
+      nowIso_()
+    );
   }
   next.updatedAt = nowIso_();
   storePut_('Members', next);
@@ -1002,6 +1127,71 @@ function operationAdminPatchSubscription_(payload, context) {
   return { subscription: next };
 }
 
+function operationAdminCreateReferrer_(payload, context) {
+  assertRole_(context, ['admin']);
+  var reason = normalizeOptionalString_(payload.reason, 1000);
+  if (!reason) throw domainError_('reason is required', 'referrer_reason_required', 409);
+  var input = payload.referrer || {};
+  var code = normalizeReferralCode_(input.code);
+  if (storeList_('Referrers').some(function (record) { return record.code === code; })) {
+    throw domainError_('Referrer code already exists', 'duplicate_referrer_code', 409);
+  }
+  var now = nowIso_();
+  var referrer = createReferrerRecord_(Object.assign({}, input, { code: code }), createId_('referrer'), now);
+  storeAppend_('Referrers', referrer);
+  appendAudit_({
+    entityType: 'referrer', entityId: referrer.id, action: 'referrer.created',
+    actor: actorFromContext_(context), before: null, after: referrer,
+    reason: reason, requestId: context.requestId
+  });
+  return { referrer: referrer };
+}
+
+function operationAdminPatchReferrer_(payload, context) {
+  assertRole_(context, ['admin']);
+  var reason = normalizeOptionalString_(payload.reason, 1000);
+  if (!reason) throw domainError_('reason is required', 'referrer_reason_required', 409);
+  var referrerId = assertRequiredString_(payload.referrerId, 'referrerId', 100);
+  var current = storeFindById_('Referrers', referrerId);
+  if (!current) throw domainError_('Referrer record not found', 'referrer_not_found', 404);
+  var next = updateReferrerRecord_(current, payload.patch || {}, nowIso_());
+  if (storeList_('Referrers').some(function (record) {
+    return record.id !== current.id && record.code === next.code;
+  })) {
+    throw domainError_('Referrer code already exists', 'duplicate_referrer_code', 409);
+  }
+  storePut_('Referrers', next);
+  appendAudit_({
+    entityType: 'referrer', entityId: next.id, action: 'referrer.admin_patched',
+    actor: actorFromContext_(context), before: current, after: next,
+    reason: reason, requestId: context.requestId
+  });
+  return { referrer: next };
+}
+
+function operationAdminPatchCommission_(payload, context) {
+  assertRole_(context, ['admin']);
+  var subscriptionId = assertRequiredString_(payload.subscriptionId, 'subscriptionId', 100);
+  var current = requireRecord_('Subscriptions', subscriptionId);
+  var actor = actorFromContext_(context);
+  var now = nowIso_();
+  var next = patchCommissionRecord_(current, {
+    action: payload.action,
+    approvalReference: payload.approvalReference,
+    payoutReference: payload.payoutReference,
+    voidReason: payload.voidReason,
+    reason: payload.reason
+  }, actor, now);
+  storePut_('Subscriptions', next);
+  appendAudit_({
+    entityType: 'commission', entityId: subscriptionId,
+    action: 'commission.' + payload.action,
+    actor: actor, before: current, after: next,
+    reason: assertRequiredString_(payload.reason, 'reason', 1000), requestId: context.requestId
+  });
+  return { commission: enrichSubscriptionsForAdmin_([next])[0] };
+}
+
 function operationAdminApproveNotification_(payload, context) {
   assertRole_(context, ['admin']);
   return { notification: approveNotification_(
@@ -1038,6 +1228,21 @@ function operationAdminExport_(payload, context) {
   assertRole_(context, ['admin']);
   var resource = assertRequiredString_(payload.resource, 'resource', 40).toLowerCase();
   var sheetName = ZF_ADMIN_RESOURCES[resource];
+  if (resource === 'commissions') {
+    var commissions = enrichSubscriptionsForAdmin_(storeList_('Subscriptions')).filter(function (record) {
+      return record.referralSnapshot && record.commissionState !== 'not_applicable';
+    });
+    appendAudit_({
+      entityType: 'export', entityId: resource, action: 'admin.csv_exported',
+      actor: actorFromContext_(context), before: null, after: { rows: commissions.length },
+      reason: normalizeOptionalString_(payload.reason, 1000), requestId: context.requestId
+    });
+    return {
+      filename: 'zhifu-commissions-' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '.csv',
+      mimeType: 'text/csv;charset=utf-8',
+      csv: commissionRecordsToCsv_(commissions)
+    };
+  }
   if (!sheetName) {
     throw domainError_('Unsupported export resource', 'invalid_request');
   }

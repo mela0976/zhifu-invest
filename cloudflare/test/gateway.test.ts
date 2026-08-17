@@ -9,6 +9,7 @@ import worker from '../src/index';
 import { createSignedEnvelope } from '../src/apps-script';
 import { hmacSha256Base64, sha256Hex, timingSafeBase64Equal } from '../src/crypto';
 import { SESSION_COOKIE } from '../src/db';
+import { appsScriptErrorStatus } from '../src/errors';
 
 const allowedOrigin = 'https://mela0976.github.io';
 
@@ -89,6 +90,17 @@ afterEach(() => {
 });
 
 describe('Cloudflare gateway integration', () => {
+  it('maps every canonical referral and commission domain error to 4xx', () => {
+    const codes = [
+      'invalid_commission_rate', 'invalid_commission_basis', 'invalid_referrer_basis',
+      'invalid_referrer_period', 'invalid_referrer_status', 'invalid_referrer_code', 'invalid_referrer_email',
+      'commission_reason_required', 'commission_actor_required', 'commission_approval_required',
+      'commission_payment_required', 'commission_void_reason_required', 'referrer_not_found',
+      'referrer_not_effective', 'duplicate_referrer_code', 'commission_amount_locked',
+    ];
+    for (const code of codes) expect(appsScriptErrorStatus(code)).toBeGreaterThanOrEqual(400);
+    for (const code of codes) expect(appsScriptErrorStatus(code)).toBeLessThan(500);
+  });
   it('persists LINE OAuth state and nonce before redirecting', async () => {
     const { response, ctx } = await invoke('/api/auth/line');
     await waitOnExecutionContext(ctx);
@@ -402,5 +414,122 @@ describe('Cloudflare gateway integration', () => {
 
     const me = await invoke('/api/auth/me', { headers: { cookie: `${SESSION_COOKIE}=${rawSession}` } });
     await expect(me.response.json()).resolves.toMatchObject({ data: { csrfToken: 'csrf-line-csrf' } });
+  });
+
+  it('proxies the canonical referrer and commission admin contracts', async () => {
+    const rawSession = 'admin-referral-session';
+    await insertAdminSession(rawSession);
+    const payloads: Array<{ operation: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.toString() !== env.APPS_SCRIPT_URL) throw new Error(`Unexpected outbound request: ${url}`);
+      const envelope = JSON.parse(String(init?.body)) as { operation: string; payloadJson: string };
+      payloads.push({ operation: envelope.operation, payload: JSON.parse(envelope.payloadJson) });
+      return Response.json({ ok: true, data: { records: [], total: 0 } });
+    });
+    const authHeaders = { cookie: `${SESSION_COOKIE}=${rawSession}` };
+    const mutationHeaders = {
+      ...authHeaders, origin: allowedOrigin, 'x-csrf-token': 'csrf-admin', 'content-type': 'application/json',
+    };
+    expect((await invoke('/api/admin/referrers', { headers: authHeaders })).response.status).toBe(200);
+    expect((await invoke('/api/admin/referrers', {
+      method: 'POST', headers: mutationHeaders,
+      body: JSON.stringify({
+        code: 'GROUP-A', displayName: 'Group A', legalName: 'Group A Ltd', contactName: 'Contact',
+        contactEmail: 'contact@example.com', status: 'active', defaultCommissionRateBps: 500,
+        commissionBasis: 'allocated_amount', agreementReference: 'AG-1',
+        effectiveAt: '2026-01-01T00:00:00.000Z', expiresAt: null, reason: 'contract',
+      }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/referrers/ref-1', {
+      method: 'PATCH', headers: mutationHeaders,
+      body: JSON.stringify({ code: 'GROUP-B', status: 'disabled', reason: 'expired agreement' }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/members/member-1', {
+      method: 'PATCH', headers: mutationHeaders,
+      body: JSON.stringify({
+        referralAttribution: { referrerId: 'ref-1', evidenceReference: 'EV-1' },
+        reason: 'matched admin evidence',
+      }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/commissions', { headers: authHeaders })).response.status).toBe(200);
+    expect((await invoke('/api/admin/commissions/sub-1', {
+      method: 'PATCH', headers: mutationHeaders,
+      body: JSON.stringify({ action: 'approve', approvalReference: 'APP-1', reason: 'evidence matched' }),
+    })).response.status).toBe(200);
+
+    expect(payloads.map(({ operation }) => operation)).toEqual([
+      'adminList', 'adminCreateReferrer', 'adminPatchReferrer', 'adminPatchMember', 'adminList', 'adminPatchCommission',
+    ]);
+    expect(payloads[0].payload).toMatchObject({ resource: 'referrers' });
+    expect(payloads[1].payload).toMatchObject({
+      referrer: { code: 'GROUP-A', status: 'active', defaultCommissionRateBps: 500, commissionBasis: 'allocated_amount' },
+      reason: 'contract',
+    });
+    expect(payloads[2].payload).toMatchObject({ referrerId: 'ref-1', patch: { code: 'GROUP-B', status: 'disabled' }, reason: 'expired agreement' });
+    expect(payloads[3].payload).toMatchObject({
+      memberId: 'member-1', patch: { referralAttribution: { referrerId: 'ref-1', evidenceReference: 'EV-1' } },
+      reason: 'matched admin evidence',
+    });
+    expect(payloads[4].payload).toMatchObject({ resource: 'commissions' });
+    expect(payloads[5].payload).toMatchObject({
+      subscriptionId: 'sub-1', action: 'approve', approvalReference: 'APP-1', reason: 'evidence matched',
+    });
+  });
+
+  it('preserves all canonical dashboard aggregate arrays for admin', async () => {
+    const rawSession = 'admin-dashboard-contract';
+    await insertAdminSession(rawSession);
+    stubAppsScriptSequence([{ ok: true, data: {
+      overview: {}, kpis: {}, referrers: [], members: [], subscriptions: [], commissions: [], actions: [],
+    } }]);
+    const result = await invoke('/api/admin/dashboard', {
+      headers: { cookie: `${SESSION_COOKIE}=${rawSession}` },
+    });
+    expect(result.response.status).toBe(200);
+    const body = await result.response.json() as { data: Record<string, unknown> };
+    for (const key of ['referrers', 'members', 'subscriptions', 'commissions', 'actions']) {
+      expect(Array.isArray(body.data[key])).toBe(true);
+    }
+    expect(body.data).toHaveProperty('overview');
+    expect(body.data).toHaveProperty('kpis');
+  });
+
+  it('returns commission CSV as a real admin attachment', async () => {
+    const rawSession = 'admin-commission-export';
+    await insertAdminSession(rawSession);
+    stubAppsScriptSequence([{
+      ok: true,
+      data: { filename: 'commissions.csv', mimeType: 'text/csv', csv: 'subscriptionId,commissionAccruedAmountTwd\ns-1,5000' },
+    }]);
+    const result = await invoke('/api/admin/exports/commissions.csv', {
+      headers: { cookie: `${SESSION_COOKIE}=${rawSession}` },
+    });
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+    expect(result.response.headers.get('content-disposition')).toContain("filename*=UTF-8''commissions.csv");
+    expect(await result.response.text()).toContain('s-1,5000');
+  });
+
+  it('strips referral and commission evidence from member routes but preserves admin responses', async () => {
+    const memberSession = 'member-private-session';
+    const adminSession = 'admin-private-session';
+    await insertSession(memberSession, 'line-private');
+    await insertAdminSession(adminSession);
+    stubAppsScriptSequence([
+      { ok: true, data: { subscriptions: [{ id: 's-1', referralSnapshot: { evidenceReference: 'SECRET' }, referralAttribution: { state: 'verified' }, commissionState: 'approved', commissionAccruedAmountTwd: 10, referrerName: 'Private Referrer' }] } },
+      { ok: true, data: { records: [{ id: 's-1', referralSnapshot: { evidenceReference: 'SECRET' }, commissionState: 'approved', commissionAccruedAmountTwd: 10, referrerName: 'Private Referrer' }] } },
+    ]);
+    const member = await invoke('/api/subscriptions', {
+      headers: { cookie: `${SESSION_COOKIE}=${memberSession}` },
+    });
+    const memberText = await member.response.text();
+    expect(memberText).not.toMatch(/commission|referralSnapshot|referralAttribution|evidenceReference|referrerName/i);
+    const admin = await invoke('/api/admin/commissions', {
+      headers: { cookie: `${SESSION_COOKIE}=${adminSession}` },
+    });
+    const adminText = await admin.response.text();
+    expect(adminText).toContain('commissionState');
+    expect(adminText).toContain('evidenceReference');
   });
 });

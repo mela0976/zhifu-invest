@@ -220,6 +220,170 @@ test('activation cannot trust the client LINE friendship checkbox', () => {
   }
 });
 
+test('source codes remain claimed until admin evidence verifies an effective referrer', () => {
+  const active = sandbox.createReferrerRecord_({
+    code: 'group-a', displayName: '社群 A', legalName: '社群 A 有限公司',
+    contactName: '王窗口', contactEmail: 'group-a@example.com', status: 'active',
+    defaultCommissionRateBps: 375, commissionBasis: 'allocated_amount', agreementReference: 'AG-1',
+    effectiveAt: '2026-01-01T00:00:00.000Z', expiresAt: '2027-01-01T00:00:00.000Z',
+  }, 'referrer-1', '2026-01-01T00:00:00.000Z');
+  const claimed = sandbox.referralClaim_(active, '2026-08-18T00:00:00.000Z');
+  const member = { referralAttribution: claimed };
+  assert.equal(sandbox.referralSnapshotForMember_(member, [active], '2026-08-18T00:00:00.000Z'), null);
+  member.referralAttribution = sandbox.verifyReferralAttribution_(
+    member.referralAttribution,
+    { referrerId: active.id, evidenceReference: 'EVIDENCE-1' },
+    [active], { id: 'admin@example.com' }, '2026-08-18T01:00:00.000Z',
+  );
+  const snapshot = sandbox.referralSnapshotForMember_(member, [active], '2026-08-18T02:00:00.000Z');
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot)), {
+    referrerId: 'referrer-1', referrerName: '社群 A', referralCode: 'GROUP-A',
+    commissionRateBps: 375, commissionBasis: 'allocated_amount', agreementReference: 'AG-1',
+    capturedAt: '2026-08-18T02:00:00.000Z',
+  });
+  assert.equal(sandbox.referralSnapshotForMember_(member, [{ ...active, status: 'disabled' }], '2026-08-18T02:00:00.000Z'), null);
+  assert.equal(sandbox.referralSnapshotForMember_(member, [active], '2027-01-01T00:00:00.000Z'), null);
+});
+
+test('activation only claims an active effective code and never clears a verified attribution', () => {
+  const referrer = sandbox.createReferrerRecord_({
+    code: 'GROUP-A', displayName: 'Group A', legalName: 'Group A Ltd', contactName: 'Contact',
+    contactEmail: 'contact@example.com', status: 'active', defaultCommissionRateBps: 500,
+    commissionBasis: 'allocated_amount', agreementReference: 'AG-1',
+    effectiveAt: '2020-01-01T00:00:00.000Z', expiresAt: '2099-01-01T00:00:00.000Z',
+  }, 'ref-1', '2020-01-01T00:00:00.000Z');
+  const verified = {
+    referrerId: 'ref-verified', referralCode: 'VERIFIED', state: 'verified', evidenceReference: 'EV-1',
+    claimedAt: '2026-01-01T00:00:00.000Z', verifiedAt: '2026-01-02T00:00:00.000Z', verifiedBy: 'admin',
+  };
+  const originals = {
+    find: sandbox.storeFindById_, list: sandbox.storeList_, append: sandbox.storeAppend_,
+    put: sandbox.storePut_, audit: sandbox.appendAudit_,
+  };
+  let member;
+  let saved;
+  sandbox.storeFindById_ = () => member;
+  sandbox.storeList_ = (sheet) => sheet === 'Referrers' ? [referrer] : [];
+  sandbox.storeAppend_ = () => {};
+  sandbox.storePut_ = (_sheet, record) => { saved = JSON.parse(JSON.stringify(record)); };
+  sandbox.appendAudit_ = () => {};
+  const activate = (sourceCode) => sandbox.operationCreateActivation_({ activation: {
+    fullName: '王小明', phone: '0912345678', sourceCode, sourceName: '社群',
+    lineFriendConfirmed: true, privacyConsent: true,
+  } }, { role: 'member', memberId: 'm-1', actorId: 'm-1', requestId: 'req-1' });
+  try {
+    member = { id: 'm-1', lineUserId: 'U1', displayName: 'Member', lineFriendshipState: 'friend', referralAttribution: null };
+    activate('GROUP-A');
+    assert.equal(saved.referralAttribution.state, 'claimed');
+    assert.equal(saved.referralAttribution.referrerId, 'ref-1');
+    member = { id: 'm-1', lineUserId: 'U1', displayName: 'Member', lineFriendshipState: 'friend', referralAttribution: null };
+    activate('UNKNOWN');
+    assert.equal(saved.referralAttribution, null);
+    member = { id: 'm-1', lineUserId: 'U1', displayName: 'Member', lineFriendshipState: 'friend', referralAttribution: verified };
+    const response = activate('UNKNOWN');
+    assert.deepEqual(saved.referralAttribution, verified);
+    assert.doesNotMatch(JSON.stringify(response), /referralAttribution|evidenceReference|referrerName|commission/i);
+  } finally {
+    sandbox.storeFindById_ = originals.find;
+    sandbox.storeList_ = originals.list;
+    sandbox.storeAppend_ = originals.append;
+    sandbox.storePut_ = originals.put;
+    sandbox.appendAudit_ = originals.audit;
+  }
+});
+
+test('commission uses floor allocation math and requires evidence for approve pay and void', () => {
+  const snapshot = { referrerId: 'r-1', referrerName: 'Referrer', referralCode: 'R1', commissionRateBps: 333,
+    commissionBasis: 'allocated_amount', agreementReference: 'AG-1', capturedAt: '2026-08-18T00:00:00.000Z' };
+  assert.equal(sandbox.calculateCommissionAmount_(10001, 333), 333);
+  const base = sandbox.createSubscriptionRecord_({
+    id: 's-commission', memberId: 'm-1', projectId: 'p-1', requestedAmountTwd: 100000,
+    riskAcknowledged: true, riskAcknowledgedAt: '2026-08-18T00:00:00.000Z',
+    riskDisclosureVersion: 'v1', referralSnapshot: snapshot,
+  }, '2026-08-18T00:00:00.000Z');
+  const allocated = sandbox.updateSubscriptionRecord_(base, {
+    approvedAmountTwd: 100000, receivedAmountTwd: 33333, allocatedAmountTwd: 33333,
+  }, '2026-08-18T01:00:00.000Z');
+  assert.equal(allocated.commissionState, 'accrued');
+  assert.equal(allocated.commissionBasisAmountTwd, 33333);
+  assert.equal(allocated.commissionAccruedAmountTwd, Math.floor(33333 * 333 / 10000));
+  assert.throws(() => sandbox.patchCommissionRecord_(allocated, { action: 'approve', reason: 'checked' }, { id: 'admin' }, '2026-08-18T02:00:00.000Z'), /approvalReference/);
+  const approved = sandbox.patchCommissionRecord_(allocated, {
+    action: 'approve', approvalReference: 'APP-1', reason: 'matched evidence',
+  }, { id: 'admin' }, '2026-08-18T02:00:00.000Z');
+  assert.throws(() => sandbox.patchCommissionRecord_(approved, { action: 'pay', reason: 'paid' }, { id: 'admin' }, '2026-08-18T03:00:00.000Z'), /payoutReference/);
+  const paid = sandbox.patchCommissionRecord_(approved, {
+    action: 'pay', payoutReference: 'PAY-1', reason: 'bank transfer confirmed',
+  }, { id: 'admin' }, '2026-08-18T03:00:00.000Z');
+  assert.equal(paid.commissionState, 'paid');
+  assert.throws(() => sandbox.patchCommissionRecord_(paid, {
+    action: 'void', voidReason: 'mistake', reason: 'attempt reversal',
+  }, { id: 'admin' }, '2026-08-18T04:00:00.000Z'), /paid to void/i);
+  assert.throws(() => sandbox.updateSubscriptionRecord_(paid, {
+    receivedAmountTwd: 30000, allocatedAmountTwd: 30000,
+  }, '2026-08-18T04:00:00.000Z'), (error) => error.code === 'commission_amount_locked');
+
+  const voided = sandbox.patchCommissionRecord_(allocated, {
+    action: 'void', voidReason: 'duplicate attribution', reason: 'evidence review',
+  }, { id: 'admin' }, '2026-08-18T02:00:00.000Z');
+  assert.equal(voided.commissionState, 'void');
+  assert.equal(voided.commissionVoidReason, 'duplicate attribution');
+  const afterVoidLedgerChange = sandbox.updateSubscriptionRecord_(voided, {
+    approvedAmountTwd: 100000, receivedAmountTwd: 50000, allocatedAmountTwd: 50000,
+  }, '2026-08-18T05:00:00.000Z');
+  assert.equal(afterVoidLedgerChange.allocatedAmountTwd, 50000);
+  assert.equal(afterVoidLedgerChange.commissionBasisAmountTwd, voided.commissionBasisAmountTwd);
+  assert.equal(afterVoidLedgerChange.commissionAccruedAmountTwd, voided.commissionAccruedAmountTwd);
+});
+
+test('member serializers exclude all referral and commission evidence fields', () => {
+  const member = sandbox.sanitizeMemberForSelf_({
+    id: 'm-1', displayName: 'Member', sourceGroup: 'claimed source', membershipState: 'active',
+    qualificationState: 'approved', referralAttribution: { verified: { evidenceReference: 'SECRET' } },
+    projectAccess: [], createdAt: 'now', updatedAt: 'now',
+  });
+  const subscription = sandbox.sanitizeSubscriptionForMember_({
+    id: 's-1', memberId: 'm-1', projectId: 'p-1', membershipState: 'active',
+    qualificationState: 'approved', subscriptionState: 'submitted', fundingState: 'unpaid',
+    allocationState: 'pending', requestedAmountTwd: 1, approvedAmountTwd: 0,
+    receivedAmountTwd: 0, allocatedAmountTwd: 0, refundedAmountTwd: 0,
+    referralSnapshot: { referrerName: 'SECRET' }, commissionState: 'pending',
+    commissionBasisAmountTwd: 1, commissionAccruedAmountTwd: 99, createdAt: 'now', updatedAt: 'now',
+  });
+  const serialized = JSON.stringify({ member, subscription });
+  assert.doesNotMatch(serialized, /commission|referralSnapshot|referralAttribution|evidenceReference|referrerName/i);
+});
+
+test('referral and commission sheets expose the production column contract', () => {
+  assert.ok(sandbox.ZF_SCHEMA.Members.includes('referralAttributionJson'));
+  assert.ok(sandbox.ZF_SCHEMA.Subscriptions.includes('referralSnapshotJson'));
+  for (const field of ['commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd', 'commissionApprovalJson', 'commissionPaymentJson', 'commissionVoidReason']) {
+    assert.ok(sandbox.ZF_SCHEMA.Subscriptions.includes(field));
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(sandbox.ZF_SCHEMA.Referrers)), [
+    'id', 'demo', 'code', 'displayName', 'legalName', 'contactName', 'contactEmail',
+    'status', 'defaultCommissionRateBps', 'commissionBasis', 'agreementReference',
+    'effectiveAt', 'expiresAt', 'createdAt', 'updatedAt',
+  ]);
+});
+
+test('commission CSV exposes admin evidence columns without changing subscription rows', () => {
+  const csv = sandbox.commissionRecordsToCsv_([{
+    id: 's-1', memberId: 'm-1', memberName: 'Member', projectId: 'p-1', projectName: 'Project',
+    referralSnapshot: { referrerId: 'r-1', referrerName: 'Group A', referralCode: 'GROUP-A', commissionRateBps: 500,
+      commissionBasis: 'allocated_amount', agreementReference: 'AG-1', capturedAt: 'now' },
+    allocatedAmountTwd: 100000, commissionBasisAmountTwd: 100000,
+    commissionAccruedAmountTwd: 5000, commissionState: 'approved',
+    commissionApproval: { approvedBy: 'admin', reference: 'APP-1', approvedAt: 'now' },
+    updatedAt: 'now',
+  }]);
+  assert.match(csv, /"subscriptionId"/);
+  assert.match(csv, /"agreementReference"/);
+  assert.match(csv, /"commissionPayment"/);
+  assert.match(csv, /"AG-1"/);
+  assert.match(csv, /"5000"/);
+});
+
 test('TOTP sessions hash tokens, reject replay, expire, and lock repeated failures', () => {
   const secrets = {
     'admin1@example.com': 'JBSWY3DPEHPK3PXP',
@@ -327,9 +491,50 @@ test('every Worker Apps Script operation is registered by the Apps Script dispat
   }
 });
 
+test('canonical Worker member referral payload succeeds through the Apps dispatcher', () => {
+  const referrer = sandbox.createReferrerRecord_({
+    code: 'GROUP-A', displayName: 'Group A', legalName: 'Group A Ltd', contactName: 'Contact',
+    contactEmail: 'contact@example.com', status: 'active', defaultCommissionRateBps: 500,
+    commissionBasis: 'allocated_amount', agreementReference: 'AG-1',
+    effectiveAt: '2020-01-01T00:00:00.000Z', expiresAt: '2099-01-01T00:00:00.000Z',
+  }, 'ref-1', '2020-01-01T00:00:00.000Z');
+  const current = {
+    id: 'm-1', displayName: 'Member', membershipState: 'active', qualificationState: 'not_applied',
+    lineFriendshipState: 'friend', tier: 'free', projectAccess: [], referralAttribution: null,
+  };
+  const originals = {
+    find: sandbox.storeFindById_, list: sandbox.storeList_, put: sandbox.storePut_,
+    audit: sandbox.appendAudit_, notify: sandbox.enqueueMemberNotification_,
+  };
+  let saved;
+  sandbox.storeFindById_ = (sheet) => sheet === 'Members' ? current : null;
+  sandbox.storeList_ = (sheet) => sheet === 'Referrers' ? [referrer] : [];
+  sandbox.storePut_ = (_sheet, record) => { saved = JSON.parse(JSON.stringify(record)); };
+  sandbox.appendAudit_ = () => {};
+  sandbox.enqueueMemberNotification_ = () => {};
+  try {
+    const workerPayload = {
+      memberId: 'm-1',
+      patch: { referralAttribution: { referrerId: 'ref-1', evidenceReference: 'EV-100' } },
+      reason: 'matched admin evidence',
+      context: { role: 'admin', actorId: 'admin@example.com', requestId: 'req-worker' },
+    };
+    const result = sandbox.dispatchOperation_('adminPatchMember', workerPayload);
+    assert.equal(result.member.referralAttribution.state, 'verified');
+    assert.equal(saved.referralAttribution.evidenceReference, 'EV-100');
+    assert.equal(saved.referralAttribution.verifiedBy, 'admin@example.com');
+  } finally {
+    sandbox.storeFindById_ = originals.find;
+    sandbox.storeList_ = originals.list;
+    sandbox.storePut_ = originals.put;
+    sandbox.appendAudit_ = originals.audit;
+    sandbox.enqueueMemberNotification_ = originals.notify;
+  }
+});
+
 test('the Apps Script admin dashboard includes TOTP, evidence, access and valid JavaScript', () => {
   const html = fs.readFileSync(path.join(root, 'Admin.html'), 'utf8');
-  for (const marker of ['adminAuthenticateTotp', 'sessionStorage', 'qualificationExpiresAt', 'projectAccess', 'activationEvidence', 'lineFriendshipState', 'sourceCode', 'consentedAt']) {
+  for (const marker of ['adminAuthenticateTotp', 'sessionStorage', 'qualificationExpiresAt', 'projectAccess', 'activationEvidence', 'lineFriendshipState', 'sourceCode', 'consentedAt', 'referralEvidence', 'adminPatchCommission', 'defaultCommissionRateBps']) {
     assert.match(html, new RegExp(marker));
   }
   assert.match(html, /qualificationState==='approved'[\s\S]*qualificationExpiresAt/);

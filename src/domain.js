@@ -4,7 +4,12 @@ export const STATES = Object.freeze({
   subscription: ['draft', 'submitted', 'operations_confirmed', 'partner_review', 'approved', 'rejected', 'cancelled'],
   funding: ['unpaid', 'partial', 'paid', 'refunded'],
   allocation: ['pending', 'partial', 'final'],
+  commission: ['not_applicable', 'pending', 'accrued', 'approved', 'paid', 'void'],
 });
+
+export const REFERRER_STATUSES = Object.freeze(['active', 'disabled']);
+export const REFERRAL_ATTRIBUTION_STATES = Object.freeze(['claimed', 'verified', 'rejected']);
+export const COMMISSION_BASIS = 'allocated_amount';
 
 export const AMOUNT_FIELDS = Object.freeze([
   'requestedAmountTwd',
@@ -49,6 +54,14 @@ const TRANSITIONS = Object.freeze({
     partial: ['final'],
     final: [],
   },
+  commission: {
+    not_applicable: [],
+    pending: ['accrued', 'void'],
+    accrued: ['approved', 'void'],
+    approved: ['paid', 'void'],
+    paid: [],
+    void: [],
+  },
 });
 
 export class DomainError extends Error {
@@ -85,6 +98,87 @@ export function normalizeTwd(value, field = 'amount') {
     throw new DomainError(`${field} must be a non-negative TWD integer`, 'invalid_amount');
   }
   return number;
+}
+
+export function normalizeCommissionRateBps(value) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0 || number > 10_000) {
+    throw new DomainError('defaultCommissionRateBps must be an integer from 0 to 10000', 'invalid_commission_rate');
+  }
+  return number;
+}
+
+function requiredText(value, field) {
+  const text = String(value ?? '').trim();
+  if (!text) throw new DomainError(`${field} is required`, 'missing_referrer_field');
+  return text;
+}
+
+export function validateReferrer(input) {
+  const effectiveAt = Date.parse(input.effectiveAt || '');
+  const expiresAt = input.expiresAt == null || input.expiresAt === '' ? null : Date.parse(input.expiresAt);
+  const status = String(input.status || '');
+  const code = requiredText(input.code, 'code').toUpperCase();
+  if (!/^[A-Z0-9][A-Z0-9_-]{1,63}$/.test(code)) {
+    throw new DomainError('code must be 2-64 uppercase letters, numbers, underscores or hyphens', 'invalid_referrer_code');
+  }
+  if (!REFERRER_STATUSES.includes(status)) {
+    throw new DomainError('status must be active or disabled', 'invalid_referrer_status');
+  }
+  if (input.commissionBasis !== COMMISSION_BASIS) {
+    throw new DomainError(`commissionBasis must be ${COMMISSION_BASIS}`, 'invalid_commission_basis');
+  }
+  if (!Number.isFinite(effectiveAt) || (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= effectiveAt))) {
+    throw new DomainError('effectiveAt must be valid and expiresAt must be later when provided', 'invalid_referrer_period');
+  }
+  const contactEmail = requiredText(input.contactEmail, 'contactEmail').toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+    throw new DomainError('contactEmail must be valid', 'invalid_referrer_email');
+  }
+  return {
+    code,
+    displayName: requiredText(input.displayName, 'displayName'),
+    legalName: requiredText(input.legalName, 'legalName'),
+    contactName: requiredText(input.contactName, 'contactName'),
+    contactEmail,
+    status,
+    defaultCommissionRateBps: normalizeCommissionRateBps(input.defaultCommissionRateBps),
+    commissionBasis: COMMISSION_BASIS,
+    agreementReference: requiredText(input.agreementReference, 'agreementReference'),
+    effectiveAt: new Date(effectiveAt).toISOString(),
+    expiresAt: expiresAt === null ? null : new Date(expiresAt).toISOString(),
+  };
+}
+
+export function isReferrerEffective(referrer, now = new Date().toISOString()) {
+  if (!referrer || referrer.status !== 'active') return false;
+  const at = Date.parse(now);
+  const effectiveAt = Date.parse(referrer.effectiveAt || '');
+  const expiresAt = referrer.expiresAt == null ? null : Date.parse(referrer.expiresAt);
+  return Number.isFinite(at) && Number.isFinite(effectiveAt) && effectiveAt <= at
+    && (expiresAt === null || (Number.isFinite(expiresAt) && expiresAt > at));
+}
+
+export function captureReferralSnapshot(member, referrers, now) {
+  const attribution = member?.referralAttribution;
+  if (!attribution || attribution.state !== 'verified') return null;
+  const referrer = referrers.find((item) => item.id === attribution.referrerId);
+  if (!isReferrerEffective(referrer, now)) return null;
+  return {
+    referrerId: referrer.id,
+    referrerName: referrer.displayName,
+    referralCode: referrer.code,
+    commissionRateBps: referrer.defaultCommissionRateBps,
+    commissionBasis: referrer.commissionBasis,
+    agreementReference: referrer.agreementReference,
+    capturedAt: now,
+  };
+}
+
+export function calculateCommissionAmount(allocatedAmountTwd, commissionRateBps) {
+  const amount = normalizeTwd(allocatedAmountTwd, 'allocatedAmountTwd');
+  const rate = normalizeCommissionRateBps(commissionRateBps);
+  return Number((BigInt(amount) * BigInt(rate)) / 10_000n);
 }
 
 export function validateAmounts(input) {
@@ -146,6 +240,7 @@ export function memberProject(project, member) {
 
 export function createSubscriptionRecord({
   id, memberId, projectId, requestedAmountTwd, riskAcknowledged, riskAcknowledgedAt, riskDisclosureVersion, now,
+  referralSnapshot = null,
 }) {
   if (riskAcknowledged !== true || !riskAcknowledgedAt || !riskDisclosureVersion) {
     throw new DomainError('Risk acknowledgement, timestamp and disclosure version are required', 'risk_acknowledgement_required', 409);
@@ -168,6 +263,13 @@ export function createSubscriptionRecord({
     riskAcknowledgedAt,
     riskDisclosureVersion,
     partnerApproval: null,
+    referralSnapshot: referralSnapshot ? structuredClone(referralSnapshot) : null,
+    commissionState: referralSnapshot ? 'pending' : 'not_applicable',
+    commissionBasisAmountTwd: 0,
+    commissionAccruedAmountTwd: 0,
+    commissionApproval: null,
+    commissionPayment: null,
+    commissionVoidReason: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -209,7 +311,62 @@ export function updateSubscriptionRecord(current, patch, now) {
   assertTransition('allocation', current.allocationState, derivedAllocationState);
   next.fundingState = derivedFundingState;
   next.allocationState = derivedAllocationState;
+  const currentCommissionState = current.commissionState || (current.referralSnapshot ? 'pending' : 'not_applicable');
+  const currentCommissionAmount = Number(current.commissionAccruedAmountTwd || 0);
+  const nextCommissionAmount = next.referralSnapshot
+    ? calculateCommissionAmount(next.allocatedAmountTwd, next.referralSnapshot.commissionRateBps)
+    : 0;
+  if (['approved', 'paid'].includes(currentCommissionState) && nextCommissionAmount !== currentCommissionAmount) {
+    throw new DomainError('Allocated amount cannot change an approved or paid commission', 'commission_amount_locked', 409);
+  }
+  next.commissionState = currentCommissionState;
+  next.commissionApproval = current.commissionApproval || null;
+  next.commissionPayment = current.commissionPayment || null;
+  next.commissionVoidReason = current.commissionVoidReason || null;
+  if (['pending', 'accrued'].includes(currentCommissionState)) {
+    next.commissionBasisAmountTwd = next.allocatedAmountTwd;
+    next.commissionAccruedAmountTwd = nextCommissionAmount;
+    if (currentCommissionState === 'pending' && next.allocationState === 'final' && next.allocatedAmountTwd > 0) {
+      next.commissionState = 'accrued';
+    }
+  } else {
+    next.commissionBasisAmountTwd = current.commissionBasisAmountTwd || 0;
+    next.commissionAccruedAmountTwd = currentCommissionAmount;
+  }
   next.updatedAt = now;
+  return next;
+}
+
+export function updateCommissionRecord(current, patch, now) {
+  const from = current.commissionState || (current.referralSnapshot ? 'pending' : 'not_applicable');
+  const action = String(patch.action || '');
+  const reason = String(patch.reason || '').trim();
+  const actorId = String(patch.actorId || '').trim();
+  const targets = { approve: 'approved', pay: 'paid', void: 'void' };
+  const to = targets[action];
+  if (!to) throw new DomainError('action must be approve, pay or void', 'invalid_commission_action');
+  if (!reason) throw new DomainError('reason is required', 'commission_reason_required', 409);
+  if (!actorId) throw new DomainError('Authenticated actor is required', 'commission_actor_required', 409);
+  assertTransition('commission', from, to);
+  const next = { ...current, commissionState: to, updatedAt: now };
+  if (to === 'approved') {
+    const reference = String(patch.approvalReference || '').trim();
+    if (!reference) throw new DomainError('approvalReference is required', 'commission_approval_required', 409);
+    next.commissionApproval = { approvedBy: actorId, reference, approvedAt: now };
+  }
+  if (to === 'paid') {
+    if (!current.commissionApproval) {
+      throw new DomainError('Commission must be approved before payment', 'commission_approval_required', 409);
+    }
+    const reference = String(patch.payoutReference || '').trim();
+    if (!reference) throw new DomainError('payoutReference is required', 'commission_payment_required', 409);
+    next.commissionPayment = { paidBy: actorId, reference, paidAt: now };
+  }
+  if (to === 'void') {
+    const voidReason = String(patch.voidReason || '').trim();
+    if (!voidReason) throw new DomainError('voidReason is required', 'commission_void_reason_required', 409);
+    next.commissionVoidReason = voidReason;
+  }
   return next;
 }
 

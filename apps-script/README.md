@@ -8,7 +8,7 @@ Sheets 直接公開給瀏覽器。
 
 1. 建立一個新的 Apps Script 專案，將本目錄除 `tests/` 外的檔案上傳。
 2. 執行 `setupWorkbook()`；它會建立或連結試算表、寫入 `SPREADSHEET_ID`，並建立：
-   `Members`、`Projects`、`Subscriptions`、`Bookings`、`Activations`、
+   `Members`、`Projects`、`Subscriptions`、`Referrers`、`Bookings`、`Activations`、
    `Notifications`、`Audits`、`GatewayNonces`。
 3. 只有測試環境才手動執行 `seedDemoData()`。它不會自動執行，且只接受空白資料表；
    產生 6 個專案、30 位會員、25 筆認購，人物、公司與文字均標示 `DEMO`。
@@ -66,7 +66,9 @@ https://developers.google.com/apps-script/manifest/web-app-api-executable
 
 所有 Sheets mutation 都在同一 ScriptLock 內執行，並在 release lock 前呼叫
 `SpreadsheetApp.flush()`。若已存在舊版 Sheet，新增欄位不會被靜默改寫；`setupWorkbook()` 會以
-`schema_mismatch` 拒絕。先備份，再依 `ZF_SCHEMA` 遷移表頭或建立新的 workbook。
+`schema_mismatch` 拒絕。先備份，再由 allowlist 管理員手動執行一次
+`migrateReferralCommissionSchema()`；它只接受舊版表頭的精確前綴、append 新欄並建立
+`Referrers`，遇到其他差異即 fail closed。
 
 ## 3. Worker → Apps Script 固定信封
 
@@ -141,20 +143,24 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 | `deck.authorize` | `{projectId,actor}` → `{allowed,objectKey,filename,contentType,expiresAt}`；R2 key 來自 `project.deck.objectKey`，缺省為 `decks/{projectId}/{deckId}.pdf` |
 | `deck.download.audit` | `{projectId,objectKey,actor,downloadedAt}` → `{accepted:true}` |
 | `line.webhook.ingest` | `{events:[minimal LINE events]}` → `{accepted,results}`；只存 event metadata，不保存訊息全文 |
-| `admin.dashboard`, `admin.overview` | → KPI、五種金額總計、近期認購與待辦 |
+| `admin.dashboard`, `admin.overview` | → `{overview,kpis,referrers,members,subscriptions,commissions,actions}`，另保留 HtmlService 使用的近期認購與待辦 alias |
 | `admin.members.list`, `admin.projects.list`, `admin.subscriptions.list`, `admin.notifications.list`, `admin.audits.list` | → `{resource,records,total}` |
 | `admin.actions.list` | → `{actions:{members,subscriptions,notifications}}` |
 | `admin.members.update` | `params.memberId`, `body` patch + reason；資格 approved 必須有 approver/approvedAt/reference/future expiresAt，並可更新 `projectAccess[]` |
 | `admin.projects.update` | `params.projectId`, `body` patch + reason；逐案 allowlist 寫入 Projects |
 | `admin.subscriptions.update` | `params.subscriptionId`, `body` patch + reason；五金額 invariant、狀態 transition、partner evidence |
+| `adminCreateReferrer` | `{referrer:{code,displayName,legalName,contactName,contactEmail,status,defaultCommissionRateBps,commissionBasis,agreementReference,effectiveAt,expiresAt},reason}` → `{referrer}`；`commissionBasis` 固定為 `allocated_amount`，code 全站唯一 |
+| `adminPatchReferrer` | `{referrerId,patch:{code?,displayName?,legalName?,contactName?,contactEmail?,status?,defaultCommissionRateBps?,commissionBasis?,agreementReference?,effectiveAt?,expiresAt?},reason}` → `{referrer}`；變更 code 會重新正規化並檢查唯一性 |
+| `adminPatchCommission` | `{subscriptionId,action,approvalReference?,payoutReference?,voidReason?,reason}` → `{commission}`；action 只接受 `approve`、`pay`、`void` |
 | `admin.notifications.create` | `body:{memberIds,announcementId}`；建立 bulk `pending_manual` |
 | `admin.notifications.send` | `params.notificationId`, `body.reason`；人工核准後進 `queued` |
-| `admin.exports.members`, `admin.exports.subscriptions` | → `{filename,mimeType,csv}`；每次匯出都 append audit |
+| `admin.exports.members`, `admin.exports.subscriptions`, `adminExport(resource=referrers|commissions)` | → `{filename,mimeType,csv}`；每次匯出都 append audit |
 
 為 HtmlService 與向下相容，也支援 camelCase：`upsertLineMember`、`getMember`、`listProjects`、
 `getProject`、`listSubscriptions`、`createBooking`、`createActivation`、
 `createSubscription`、`authorizeDeck`、`webhookEvent`、`adminDashboard`、`adminList`、
 `adminPatchMember`、`adminPatchProject`、`adminPatchSubscription`、
+`adminCreateReferrer`、`adminPatchReferrer`、`adminPatchCommission`、
 `adminApproveNotification`、`adminCreateBulkNotification`、
 `adminProcessNotifications`、`adminExport`、`authenticateAdmin`、`deckDownloadAudit`。
 
@@ -173,6 +179,19 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
   memberAllowlist 且資格未過期才返回；visitor/member 無權時不回傳 company、amount、reports、deck。
 - 啟用申請保存 sourceCode、sourceName、consentedAt 與當時伺服器已驗證的 LINE friendship evidence；
   後台會一併顯示，讓雪芬姐確認來源與同意證據。
+- `sourceCode` 只有在對應 `active` 且生效中的 Referrer 時，才建立單一
+  `Members.referralAttributionJson` claimed object；未知、disabled 或過期 code 不建立 claim，也不會清除既有 verified 歸因。
+  管理員必須以 `{referrerId,evidenceReference}` 提供證據，才可把歸因設為 `verified`。
+- 認購建立時只快照「verified 且 Referrer 在 `effectiveAt <= capturedAt < expiresAt` 生效」的引薦方。
+  `Subscriptions.referralSnapshotJson` 固定 `referrerId,referrerName,referralCode,commissionRateBps,commissionBasis,agreementReference,capturedAt`，
+  後續修改 Referrer 不回寫歷史認購。
+- 分潤固定為 `floor(allocatedAmountTwd * commissionRateBps / 10000)`。有快照的認購先為 `pending`，
+  只有 final allocation 且配置金額大於 0 才成為 `accrued`。approve 必須有
+  `approvalReference`，pay 必須先 approved 且有 `payoutReference`，void 必須有 `voidReason`；三者都
+  必須另有操作 `reason` 並 append audit。approved／paid 鎖定分潤金額；void 凍結分潤基礎與金額，
+  但認購 ledger 仍可依合法狀態轉移繼續更新。paid 與 void 都是分潤終態。
+- 會員 DTO 與認購會員 DTO 不回 `commission*`、`referralSnapshot`、`referralAttribution`、
+  `evidenceReference` 或 `referrerName`；完整引薦與分潤資料只允許 admin operation。
 - `Audits` 在應用層只 append；包含 actor、before/after、reason、requestId、時間。不要手動編輯或刪除。Google Sheets 本身不是 WORM storage；若正式法規要求不可竄改保存，需另接有 retention lock 的 audit store。
 
 ## 6. 驗證
@@ -184,5 +203,6 @@ node apps-script/tests/run-tests.cjs
 測試涵蓋獨立 HMAC canonical/signature vector、過期與篡改、lock 內 flush、五金額 invariant、
 推導狀態不可倒退、partner/qualification evidence 時序、缺 memberId fail closed、過期資格、
 伺服器 LINE 好友證據、TOTP replay／lockout／session 雜湊與到期、兩管理員 preflight、逐案欄位
-遮罩、通知自動/人工政策及無金額訊息。真實 Google／LINE／Sheets/R2 驗收仍需正式 credentials
+遮罩、claimed/verified/effective referral、分潤狀態與 paid immutable、會員序列化隔離、
+通知自動/人工政策及無金額訊息。真實 Google／LINE／Sheets/R2 驗收仍需正式 credentials
 與測試帳號，不能用此純函式測試代替。

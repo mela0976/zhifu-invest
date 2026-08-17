@@ -2,20 +2,27 @@ import { api, appUrl, request } from './api.js';
 import { emptyState, errorState, escapeHtml, formatDate, formatMoney, initShell, openDialog, closeDialog, qualificationExpiryIso, resolveAdminDashboardRoute, setButtonBusy, sourceNotice, toast } from './common.js';
 import { statusLabels } from './demo-data.js';
 
-let dashboard = { kpis: {}, members: [], subscriptions: [], bookings: [], actions: [] };
+let dashboard = { kpis: {}, members: [], subscriptions: [], bookings: [], referrers: [], commissions: [], actions: [] };
 let projects = [];
 let selectedSubscription = null;
 let selectedMember = null;
+let selectedReferrer = null;
+let selectedCommission = null;
 let activeView = 'overview';
 
 const statusLabel = (value) => statusLabels[value] || value || '待確認';
+const commissionStatusLabel = (value) => ({
+  pending: '待計提／預估', accrued: '已計提', approved: '已核准', paid: '已付款', void: '已作廢', not_applicable: '不適用',
+}[value] || statusLabel(value));
 const dateTimeInputValue = (value) => value && !Number.isNaN(new Date(value).getTime())
   ? new Date(value).toISOString().slice(0, 16) : '';
 const memberDialog = document.querySelector('#member-dialog');
 const subscriptionDialog = document.querySelector('#subscription-admin-dialog');
+const referrerDialog = document.querySelector('#referrer-dialog');
+const commissionDialog = document.querySelector('#commission-dialog');
 
 function showView(view, updateHash = true) {
-  const next = ['overview', 'members', 'subscriptions', 'bookings', 'projects', 'content', 'notifications', 'audit'].includes(view) ? view : 'overview';
+  const next = ['overview', 'members', 'subscriptions', 'referrals', 'bookings', 'projects', 'content', 'notifications', 'audit'].includes(view) ? view : 'overview';
   activeView = next;
   document.querySelectorAll('[data-admin-view]').forEach((section) => { section.hidden = section.dataset.adminView !== next; });
   document.querySelectorAll('[data-admin-nav]').forEach((link) => {
@@ -49,10 +56,30 @@ function renderActions() {
 
 function memberState(item) { return item.membership || item.membershipState || 'pending'; }
 function qualificationState(item) { return typeof item.qualification === 'string' ? item.qualification : item.qualificationState || item.qualification?.status || 'not_applied'; }
+function referralAttribution(item) { return item.referralAttribution || {}; }
+function referralName(item) {
+  const attribution = referralAttribution(item);
+  const referrer = dashboard.referrers.find((candidate) => candidate.id === attribution.referrerId);
+  return item.referrerName || attribution.referrerName || attribution.displayName || attribution.name || referrer?.displayName || referrer?.name || '尚未歸屬';
+}
+function referralSnapshot(item) { return item.referralSnapshot || {}; }
+function snapshotName(item) {
+  const snapshot = referralSnapshot(item);
+  return snapshot.referrerName || snapshot.name || item.referrerName || '無引薦快照';
+}
+function snapshotRate(item) {
+  const snapshot = referralSnapshot(item);
+  return Number(snapshot.commissionRateBps ?? snapshot.rateBps ?? snapshot.defaultCommissionRateBps ?? item.commissionRateBps ?? 0);
+}
+function bpsLabel(value) {
+  const bps = Number(value || 0);
+  return `${bps.toLocaleString('zh-TW')} bps (${(bps / 100).toLocaleString('zh-TW', { maximumFractionDigits: 2 })}%)`;
+}
+function referrerStatusLabel(value) { return value === 'disabled' ? '已停用' : '合作中'; }
 
 function memberRows(items) {
-  const desktop = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>會員</th><th>來源</th><th>會員狀態</th><th>投資資格</th><th>LINE</th><th>申請總額</th><th>實際入金</th><th>操作</th></tr></thead><tbody>${items.map((item) => `<tr><td class="data-table__primary"><strong>${escapeHtml(item.name || item.displayName)}</strong><small>${escapeHtml(item.id)}</small></td><td>${escapeHtml(item.source || item.sourceGroup || '—')}</td><td><span class="status" data-status="${escapeHtml(memberState(item))}">${escapeHtml(statusLabel(memberState(item)))}</span></td><td><span class="status" data-status="${escapeHtml(qualificationState(item))}">${escapeHtml(statusLabel(qualificationState(item)))}</span></td><td>${item.lineFriend || item.lineFriendshipState === 'friend' ? '已加好友' : '待確認'}</td><td class="data-table__money">${formatMoney(item.requested, true)}</td><td class="data-table__money">${formatMoney(item.received, true)}</td><td><button class="button button--secondary button--small" type="button" data-member-manage="${escapeHtml(item.id)}">確認／管理</button></td></tr>`).join('')}</tbody></table></div>`;
-  const mobile = `<div class="mobile-records">${items.map((item) => `<article class="mobile-record"><div class="mobile-record__top"><div><strong>${escapeHtml(item.name || item.displayName)}</strong><div class="mono micro">${escapeHtml(item.id)}</div></div><span class="status" data-status="${escapeHtml(memberState(item))}">${escapeHtml(statusLabel(memberState(item)))}</span></div><div class="mobile-record__meta"><div><span>資格</span><strong>${escapeHtml(statusLabel(qualificationState(item)))}</strong></div><div><span>申請總額</span><strong>${formatMoney(item.requested, true)}</strong></div></div><button class="button button--secondary button--small button--wide" type="button" data-member-manage="${escapeHtml(item.id)}">確認／管理</button></article>`).join('')}</div>`;
+  const desktop = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>會員</th><th>來源</th><th>引薦方</th><th>會員狀態</th><th>投資資格</th><th>LINE</th><th>申請總額</th><th>實際入金</th><th>操作</th></tr></thead><tbody>${items.map((item) => `<tr><td class="data-table__primary"><strong>${escapeHtml(item.name || item.displayName)}</strong><small>${escapeHtml(item.id)}</small></td><td>${escapeHtml(item.source || item.sourceGroup || '—')}</td><td><strong>${escapeHtml(referralName(item))}</strong><small class="table-note">${escapeHtml(referralAttribution(item).evidenceReference || referralAttribution(item).reference || '證據待登錄')}</small></td><td><span class="status" data-status="${escapeHtml(memberState(item))}">${escapeHtml(statusLabel(memberState(item)))}</span></td><td><span class="status" data-status="${escapeHtml(qualificationState(item))}">${escapeHtml(statusLabel(qualificationState(item)))}</span></td><td>${item.lineFriend || item.lineFriendshipState === 'friend' ? '已加好友' : '待確認'}</td><td class="data-table__money">${formatMoney(item.requested, true)}</td><td class="data-table__money">${formatMoney(item.received, true)}</td><td><button class="button button--secondary button--small" type="button" data-member-manage="${escapeHtml(item.id)}">確認／管理</button></td></tr>`).join('')}</tbody></table></div>`;
+  const mobile = `<div class="mobile-records">${items.map((item) => `<article class="mobile-record"><div class="mobile-record__top"><div><strong>${escapeHtml(item.name || item.displayName)}</strong><div class="mono micro">${escapeHtml(item.id)}</div></div><span class="status" data-status="${escapeHtml(memberState(item))}">${escapeHtml(statusLabel(memberState(item)))}</span></div><p class="referral-line"><span>引薦</span><strong>${escapeHtml(referralName(item))}</strong></p><div class="mobile-record__meta"><div><span>資格</span><strong>${escapeHtml(statusLabel(qualificationState(item)))}</strong></div><div><span>申請總額</span><strong>${formatMoney(item.requested, true)}</strong></div></div><button class="button button--secondary button--small button--wide" type="button" data-member-manage="${escapeHtml(item.id)}">確認／管理</button></article>`).join('')}</div>`;
   return desktop + mobile;
 }
 
@@ -60,9 +87,9 @@ function subscriptionState(item) { return item.subscriptionStatus || item.subscr
 function fundingState(item) { return item.fundingStatus || item.fundingState || 'unpaid'; }
 
 function subscriptionRows(items, compact = false) {
-  const rows = items.map((item) => `<tr data-testid="subscription-row" data-subscription-id="${escapeHtml(item.id)}"><td class="data-table__primary"><strong>${escapeHtml(item.memberName || item.memberId)}</strong><small>${escapeHtml(item.memberId)}</small></td><td class="data-table__primary"><strong>${escapeHtml(item.projectName || item.projectId)}</strong><small>${escapeHtml(item.id)}</small></td><td class="data-table__money">${formatMoney(item.requestedAmount ?? item.requestedAmountTwd)}</td><td class="data-table__money">${formatMoney(item.approvedAmount ?? item.approvedAmountTwd)}</td><td class="data-table__money">${formatMoney(item.receivedAmount ?? item.receivedAmountTwd)}</td><td><span class="status" data-status="${escapeHtml(subscriptionState(item))}">${escapeHtml(statusLabel(subscriptionState(item)))}</span></td><td><span class="status" data-status="${escapeHtml(fundingState(item))}">${escapeHtml(statusLabel(fundingState(item)))}</span></td><td><button class="button button--secondary button--small" type="button" data-subscription-manage="${escapeHtml(item.id)}" data-testid="subscription-confirm">${subscriptionState(item) === 'submitted' ? '營運確認' : '管理紀錄'}</button></td></tr>`).join('');
-  const desktop = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>會員</th><th>專案／案號</th><th>申請</th><th>核准</th><th>入金</th><th>認購狀態</th><th>入金狀態</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-  const mobile = `<div class="mobile-records">${items.map((item) => `<article class="mobile-record" data-testid="subscription-row" data-subscription-id="${escapeHtml(item.id)}"><div class="mobile-record__top"><div><strong>${escapeHtml(item.memberName || item.memberId)}</strong><div class="mono micro">${escapeHtml(item.id)}</div></div><span class="status" data-status="${escapeHtml(subscriptionState(item))}">${escapeHtml(statusLabel(subscriptionState(item)))}</span></div><p class="micro">${escapeHtml(item.projectName || item.projectId)}</p><div class="mobile-record__meta"><div><span>申請</span><strong>${formatMoney(item.requestedAmount ?? item.requestedAmountTwd, true)}</strong></div><div><span>實際入金</span><strong>${formatMoney(item.receivedAmount ?? item.receivedAmountTwd, true)}</strong></div></div><button class="button button--secondary button--small button--wide" type="button" data-subscription-manage="${escapeHtml(item.id)}" data-testid="subscription-confirm">${subscriptionState(item) === 'submitted' ? '營運確認' : '管理紀錄'}</button></article>`).join('')}</div>`;
+  const rows = items.map((item) => `<tr data-testid="subscription-row" data-subscription-id="${escapeHtml(item.id)}"><td class="data-table__primary"><strong>${escapeHtml(item.memberName || item.memberId)}</strong><small>${escapeHtml(item.memberId)}</small></td><td class="data-table__primary"><strong>${escapeHtml(item.projectName || item.projectId)}</strong><small>${escapeHtml(item.id)}</small></td><td><span class="snapshot-chip">認購快照</span><strong class="snapshot-name">${escapeHtml(snapshotName(item))}</strong><small class="table-note">${escapeHtml(referralSnapshot(item).referralCode || referralSnapshot(item).referrerCode || referralSnapshot(item).code || '—')} · ${escapeHtml(bpsLabel(snapshotRate(item)))}</small></td><td class="data-table__money">${formatMoney(item.requestedAmount ?? item.requestedAmountTwd)}</td><td class="data-table__money">${formatMoney(item.approvedAmount ?? item.approvedAmountTwd)}</td><td class="data-table__money">${formatMoney(item.receivedAmount ?? item.receivedAmountTwd)}</td><td><span class="status" data-status="${escapeHtml(subscriptionState(item))}">${escapeHtml(statusLabel(subscriptionState(item)))}</span></td><td><span class="status" data-status="${escapeHtml(fundingState(item))}">${escapeHtml(statusLabel(fundingState(item)))}</span></td><td><button class="button button--secondary button--small" type="button" data-subscription-manage="${escapeHtml(item.id)}" data-testid="subscription-confirm">${subscriptionState(item) === 'submitted' ? '營運確認' : '管理紀錄'}</button></td></tr>`).join('');
+  const desktop = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>會員</th><th>專案／案號</th><th>引薦快照</th><th>申請</th><th>核准</th><th>入金</th><th>認購狀態</th><th>入金狀態</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const mobile = `<div class="mobile-records">${items.map((item) => `<article class="mobile-record" data-testid="subscription-row" data-subscription-id="${escapeHtml(item.id)}"><div class="mobile-record__top"><div><strong>${escapeHtml(item.memberName || item.memberId)}</strong><div class="mono micro">${escapeHtml(item.id)}</div></div><span class="status" data-status="${escapeHtml(subscriptionState(item))}">${escapeHtml(statusLabel(subscriptionState(item)))}</span></div><p class="micro">${escapeHtml(item.projectName || item.projectId)}</p><p class="referral-line"><span>認購快照</span><strong>${escapeHtml(snapshotName(item))}</strong></p><div class="mobile-record__meta"><div><span>申請</span><strong>${formatMoney(item.requestedAmount ?? item.requestedAmountTwd, true)}</strong></div><div><span>實際入金</span><strong>${formatMoney(item.receivedAmount ?? item.receivedAmountTwd, true)}</strong></div></div><button class="button button--secondary button--small button--wide" type="button" data-subscription-manage="${escapeHtml(item.id)}" data-testid="subscription-confirm">${subscriptionState(item) === 'submitted' ? '營運確認' : '管理紀錄'}</button></article>`).join('')}</div>`;
   return desktop + mobile;
 }
 
@@ -87,6 +114,118 @@ function renderSubscriptions() {
   document.querySelector('#overview-subscriptions').innerHTML = dashboard.subscriptions.length ? subscriptionRows(dashboard.subscriptions.slice().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 5), true) : emptyState('沒有近期異動', '新的認購事件會出現在這裡。');
 }
 
+function commissionRecords() {
+  const merged = new Map();
+  dashboard.commissions.forEach((commission) => {
+    const subscriptionId = commission.subscriptionId || commission.id;
+    if (subscriptionId) merged.set(subscriptionId, { ...commission, subscriptionId });
+  });
+  dashboard.subscriptions.filter((item) => item.referralSnapshot || item.commissionState).forEach((subscription) => {
+    merged.set(subscription.id, { ...(merged.get(subscription.id) || {}), ...subscription, subscriptionId: subscription.id });
+  });
+  return [...merged.values()].map((commission) => {
+    const subscriptionId = commission.subscriptionId || commission.id;
+    const subscription = dashboard.subscriptions.find((item) => item.id === subscriptionId) || {};
+    return {
+      ...subscription,
+      ...commission,
+      subscriptionId,
+      referralSnapshot: commission.referralSnapshot || subscription.referralSnapshot || {},
+      commissionState: commission.commissionState || subscription.commissionState || 'pending',
+      commissionBasisAmountTwd: commission.commissionBasisAmountTwd ?? subscription.commissionBasisAmountTwd ?? 0,
+      commissionAccruedAmountTwd: commission.commissionAccruedAmountTwd ?? subscription.commissionAccruedAmountTwd ?? 0,
+      commissionApproval: commission.commissionApproval || subscription.commissionApproval || null,
+      commissionPayment: commission.commissionPayment || subscription.commissionPayment || null,
+    };
+  });
+}
+
+function commissionActionLabel(state) {
+  if (state === 'accrued') return '審核分潤';
+  if (state === 'approved') return '登錄付款';
+  if (state === 'paid') return '查看付款';
+  if (state === 'void') return '查看作廢';
+  return '查看計提';
+}
+
+function referrerStats(referrer, records) {
+  const referrerId = referrer.id;
+  const referrerCode = String(referrer.code || '').toLowerCase();
+  const attributedMembers = dashboard.members.filter((member) => {
+    const attribution = referralAttribution(member);
+    return attribution.state === 'verified' && (attribution.referrerId === referrerId || (referrerCode && String(attribution.referralCode || attribution.referrerCode || '').toLowerCase() === referrerCode));
+  }).length;
+  const attributedDeals = records.filter((record) => {
+    const snapshot = referralSnapshot(record);
+    return snapshot.referrerId === referrerId || (referrerCode && String(snapshot.referralCode || snapshot.referrerCode || snapshot.code || '').toLowerCase() === referrerCode);
+  });
+  const sum = (selector) => attributedDeals.reduce((total, item) => total + Number(selector(item) || 0), 0);
+  return {
+    attributedMembers,
+    basis: sum((item) => item.commissionBasisAmountTwd),
+    accrued: sum((item) => item.commissionState === 'void' ? 0 : item.commissionAccruedAmountTwd),
+    approved: sum((item) => ['approved', 'paid'].includes(item.commissionState) ? item.commissionAccruedAmountTwd : 0),
+    paid: sum((item) => item.commissionState === 'paid' ? item.commissionAccruedAmountTwd : 0),
+  };
+}
+
+function renderReferrers(records) {
+  const target = document.querySelector('#referrer-table');
+  if (!dashboard.referrers.length) {
+    target.innerHTML = emptyState('尚未建立引薦方', '新增第一位合作引薦方，為後續會員來源與成交分潤留下可稽核依據。');
+    return;
+  }
+  const desktopRows = dashboard.referrers.map((referrer) => {
+    const stats = referrerStats(referrer, records);
+    return `<tr data-testid="referral-row" data-referrer-id="${escapeHtml(referrer.id)}"><td class="data-table__primary"><strong>${escapeHtml(referrer.displayName || referrer.name)}</strong><small>${escapeHtml(referrer.code)}</small></td><td><span class="status" data-status="${escapeHtml(referrer.status || 'active')}">${escapeHtml(referrerStatusLabel(referrer.status))}</span></td><td class="data-table__money">${escapeHtml(bpsLabel(referrer.defaultCommissionRateBps ?? referrer.defaultRateBps))}</td><td class="data-table__money">${stats.attributedMembers.toLocaleString('zh-TW')} 位</td><td class="data-table__money">${formatMoney(stats.basis)}</td><td class="data-table__money">${formatMoney(stats.accrued)}</td><td class="data-table__money">${formatMoney(stats.approved)}</td><td class="data-table__money">${formatMoney(stats.paid)}</td><td><button class="button button--secondary button--small" type="button" data-referrer-edit="${escapeHtml(referrer.id)}">編輯</button></td></tr>`;
+  }).join('');
+  const mobileRows = dashboard.referrers.map((referrer) => {
+    const stats = referrerStats(referrer, records);
+    return `<article class="mobile-record referral-record" data-testid="referral-row" data-referrer-id="${escapeHtml(referrer.id)}"><div class="mobile-record__top"><div><strong>${escapeHtml(referrer.displayName || referrer.name)}</strong><div class="mono micro">${escapeHtml(referrer.code)}</div></div><span class="status" data-status="${escapeHtml(referrer.status || 'active')}">${escapeHtml(referrerStatusLabel(referrer.status))}</span></div><p class="referral-rate">${escapeHtml(bpsLabel(referrer.defaultCommissionRateBps ?? referrer.defaultRateBps))}</p><div class="mobile-record__meta"><div><span>歸屬會員</span><strong>${stats.attributedMembers.toLocaleString('zh-TW')} 位</strong></div><div><span>成交基礎</span><strong>${formatMoney(stats.basis, true)}</strong></div><div><span>已計提</span><strong>${formatMoney(stats.accrued, true)}</strong></div><div><span>已核准</span><strong>${formatMoney(stats.approved, true)}</strong></div><div><span>已付款</span><strong>${formatMoney(stats.paid, true)}</strong></div></div><button class="button button--secondary button--small button--wide" type="button" data-referrer-edit="${escapeHtml(referrer.id)}">編輯引薦方</button></article>`;
+  }).join('');
+  target.innerHTML = `<div class="data-table-wrap"><table class="data-table referral-table"><thead><tr><th>引薦方／代碼</th><th>狀態</th><th>預設比例</th><th>歸屬會員</th><th>成交基礎</th><th>已計提</th><th>已核准</th><th>已付款</th><th>操作</th></tr></thead><tbody>${desktopRows}</tbody></table></div><div class="mobile-records">${mobileRows}</div>`;
+}
+
+function renderCommissionRows(records) {
+  const target = document.querySelector('#commission-table');
+  const filter = document.querySelector('#commission-filter')?.value || 'all';
+  const items = records.filter((item) => filter === 'all' || item.commissionState === filter);
+  if (!items.length) {
+    target.innerHTML = emptyState('沒有符合條件的分潤', '成交完成並產生分潤計提後，紀錄會出現在這裡。');
+    return;
+  }
+  const detail = (item) => {
+    const snapshot = referralSnapshot(item);
+    return `<span class="snapshot-chip">不可變快照</span><strong class="snapshot-name">${escapeHtml(snapshotName(item))}</strong><small class="table-note">${escapeHtml(snapshot.referralCode || snapshot.referrerCode || snapshot.code || '—')} · ${escapeHtml(bpsLabel(snapshotRate(item)))}</small><small class="table-note">協議 ${escapeHtml(snapshot.agreementReference || '—')}</small>`;
+  };
+  const evidence = (item) => {
+    if (item.commissionState === 'paid') return `付款 ${escapeHtml(item.commissionPayment?.reference || item.commissionPayment?.payoutReference || '已登錄')}`;
+    if (item.commissionState === 'approved') return `核准 ${escapeHtml(item.commissionApproval?.reference || item.commissionApproval?.approvalReference || '已登錄')}`;
+    if (item.commissionState === 'void') return `作廢 ${escapeHtml(item.commissionVoid?.reason || item.voidReason || '已登錄')}`;
+    return '等待人工審核';
+  };
+  const desktopRows = items.map((item) => `<tr data-testid="commission-row" data-subscription-id="${escapeHtml(item.subscriptionId)}"><td class="data-table__primary"><strong>${escapeHtml(item.memberName || item.memberId)}</strong><small>${escapeHtml(item.memberId || '—')}</small></td><td class="data-table__primary"><strong>${escapeHtml(item.projectName || item.projectId)}</strong><small>${escapeHtml(item.subscriptionId)}</small></td><td class="snapshot-cell">${detail(item)}</td><td class="data-table__money">${formatMoney(item.commissionBasisAmountTwd)}</td><td class="data-table__money"><strong>${formatMoney(item.commissionAccruedAmountTwd)}</strong><small class="table-note">系統衍生</small></td><td><span class="status" data-status="${escapeHtml(item.commissionState)}">${escapeHtml(commissionStatusLabel(item.commissionState))}</span><small class="table-note">${evidence(item)}</small></td><td><button class="button button--secondary button--small" type="button" data-commission-manage="${escapeHtml(item.subscriptionId)}">${commissionActionLabel(item.commissionState)}</button></td></tr>`).join('');
+  const mobileRows = items.map((item) => `<article class="mobile-record commission-record" data-testid="commission-row" data-subscription-id="${escapeHtml(item.subscriptionId)}"><div class="mobile-record__top"><div><strong>${escapeHtml(item.memberName || item.memberId)}</strong><div class="mono micro">${escapeHtml(item.subscriptionId)}</div></div><span class="status" data-status="${escapeHtml(item.commissionState)}">${escapeHtml(commissionStatusLabel(item.commissionState))}</span></div><p class="micro">${escapeHtml(item.projectName || item.projectId)}</p><div class="snapshot-box">${detail(item)}</div><div class="mobile-record__meta"><div><span>成交基礎</span><strong>${formatMoney(item.commissionBasisAmountTwd, true)}</strong></div><div><span>預估／計提</span><strong>${formatMoney(item.commissionAccruedAmountTwd, true)}</strong></div></div><p class="micro">${evidence(item)}</p><button class="button button--secondary button--small button--wide" type="button" data-commission-manage="${escapeHtml(item.subscriptionId)}">${commissionActionLabel(item.commissionState)}</button></article>`).join('');
+  target.innerHTML = `<div class="data-table-wrap"><table class="data-table commission-table"><thead><tr><th>投資人</th><th>專案／認購</th><th>引薦快照</th><th>成交基礎</th><th>預估／計提分潤</th><th>狀態／證據</th><th>操作</th></tr></thead><tbody>${desktopRows}</tbody></table></div><div class="mobile-records">${mobileRows}</div>`;
+}
+
+function renderReferrals() {
+  const records = commissionRecords();
+  const activeReferrers = dashboard.referrers.filter((item) => (item.status || 'active') === 'active').length;
+  const attributedMembers = dashboard.members.filter((item) => referralAttribution(item).state === 'verified').length;
+  const basis = records.reduce((total, item) => total + Number(item.commissionBasisAmountTwd || 0), 0);
+  const accrued = records.reduce((total, item) => total + (item.commissionState === 'void' ? 0 : Number(item.commissionAccruedAmountTwd || 0)), 0);
+  const summary = [
+    ['合作引薦方', activeReferrers, 'active'],
+    ['已歸屬投資人', `${attributedMembers.toLocaleString('zh-TW')} 位`, 'members'],
+    ['成交計算基礎', formatMoney(basis, true), 'basis'],
+    ['預估／已計提', formatMoney(accrued, true), 'accrued'],
+  ];
+  document.querySelector('#referral-summary').innerHTML = summary.map(([label, value, key]) => `<article class="referral-summary__item" data-summary="${key}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></article>`).join('');
+  renderReferrers(records);
+  renderCommissionRows(records);
+}
+
 function renderBookings() {
   const target = document.querySelector('#admin-booking-list');
   if (!target) return;
@@ -108,7 +247,7 @@ function renderProjects() {
   }).join('') : '<p class="micro">尚無進度資料。</p>';
 }
 
-function renderAll() { renderKpis(); renderActions(); renderMembers(); renderSubscriptions(); renderBookings(); renderProjects(); }
+function renderAll() { renderKpis(); renderActions(); renderMembers(); renderSubscriptions(); renderReferrals(); renderBookings(); renderProjects(); }
 
 function openMember(id) {
   selectedMember = dashboard.members.find((item) => String(item.id) === String(id));
@@ -122,6 +261,11 @@ function openMember(id) {
   document.querySelector('#qualification-approved-at').value = dateTimeInputValue(approval.approvedAt);
   document.querySelector('#qualification-reference').value = approval.reference || '';
   document.querySelector('#qualification-expires-at').value = String(approval.expiresAt || '').slice(0, 10);
+  const attribution = referralAttribution(selectedMember);
+  const referrerOptions = dashboard.referrers.map((referrer) => `<option value="${escapeHtml(referrer.id)}">${escapeHtml(referrer.displayName || referrer.name)}｜${escapeHtml(referrer.code)}${referrer.status === 'disabled' ? '（已停用）' : ''}</option>`).join('');
+  document.querySelector('#member-referrer').innerHTML = `<option value="">尚未歸屬</option>${referrerOptions}`;
+  document.querySelector('#member-referrer').value = attribution.referrerId || '';
+  document.querySelector('#referral-evidence-reference').value = attribution.evidenceReference || attribution.reference || '';
   document.querySelector('#member-reason').value = '';
   openDialog(memberDialog);
 }
@@ -130,7 +274,7 @@ function openSubscription(id) {
   selectedSubscription = dashboard.subscriptions.find((item) => String(item.id) === String(id));
   if (!selectedSubscription) return;
   document.querySelector('#admin-subscription-id').value = selectedSubscription.id;
-  document.querySelector('#subscription-admin-summary').innerHTML = `<div class="amount-ledger" style="grid-template-columns:1fr 1fr"><div class="amount-ledger__item"><span class="amount-ledger__label">會員</span><strong style="display:block;margin-top:8px">${escapeHtml(selectedSubscription.memberName || selectedSubscription.memberId)}</strong></div><div class="amount-ledger__item"><span class="amount-ledger__label">申請金額</span><strong class="amount-ledger__value">${formatMoney(selectedSubscription.requestedAmount ?? selectedSubscription.requestedAmountTwd, true)}</strong></div></div>`;
+  document.querySelector('#subscription-admin-summary').innerHTML = `<div class="amount-ledger subscription-summary-ledger"><div class="amount-ledger__item"><span class="amount-ledger__label">會員</span><strong style="display:block;margin-top:8px">${escapeHtml(selectedSubscription.memberName || selectedSubscription.memberId)}</strong></div><div class="amount-ledger__item"><span class="amount-ledger__label">申請金額</span><strong class="amount-ledger__value">${formatMoney(selectedSubscription.requestedAmount ?? selectedSubscription.requestedAmountTwd, true)}</strong></div><div class="amount-ledger__item"><span class="amount-ledger__label">不可變引薦快照</span><strong style="display:block;margin-top:8px">${escapeHtml(snapshotName(selectedSubscription))}</strong><small class="table-note">${escapeHtml(bpsLabel(snapshotRate(selectedSubscription)))}</small></div></div>`;
   const current = subscriptionState(selectedSubscription);
   document.querySelector('#admin-subscription-status').value = current === 'submitted' ? 'operations_confirmed' : current;
   document.querySelector('#admin-approved-amount').value = selectedSubscription.approvedAmount ?? selectedSubscription.approvedAmountTwd ?? 0;
@@ -142,12 +286,59 @@ function openSubscription(id) {
   openDialog(subscriptionDialog);
 }
 
+function openReferrer(id = '') {
+  selectedReferrer = id ? dashboard.referrers.find((item) => String(item.id) === String(id)) : null;
+  document.querySelector('#referrer-dialog-title').textContent = selectedReferrer ? '編輯引薦方' : '新增引薦方';
+  document.querySelector('#referrer-id').value = selectedReferrer?.id || '';
+  document.querySelector('#referrer-name').value = selectedReferrer?.displayName || selectedReferrer?.name || '';
+  document.querySelector('#referrer-code').value = selectedReferrer?.code || '';
+  document.querySelector('#referrer-legal-name').value = selectedReferrer?.legalName || '';
+  document.querySelector('#referrer-contact-name').value = selectedReferrer?.contactName || '';
+  document.querySelector('#referrer-contact-email').value = selectedReferrer?.contactEmail || '';
+  document.querySelector('#referrer-status').value = selectedReferrer?.status === 'disabled' ? 'disabled' : 'active';
+  document.querySelector('#referrer-rate').value = selectedReferrer?.defaultCommissionRateBps ?? selectedReferrer?.defaultRateBps ?? 0;
+  document.querySelector('#referrer-effective-date').value = String(selectedReferrer?.effectiveAt || selectedReferrer?.agreementEffectiveDate || new Date().toISOString()).slice(0, 10);
+  document.querySelector('#referrer-expires-date').value = String(selectedReferrer?.expiresAt || '').slice(0, 10);
+  document.querySelector('#referrer-agreement-reference').value = selectedReferrer?.agreementReference || '';
+  document.querySelector('#referrer-reason').value = '';
+  openDialog(referrerDialog);
+}
+
+function syncCommissionFields() {
+  const action = document.querySelector('#commission-action').value;
+  document.querySelectorAll('[data-commission-field]').forEach((field) => { field.hidden = field.dataset.commissionField !== action; });
+  document.querySelector('#commission-approval-reference').required = action === 'approve';
+  document.querySelector('#commission-payout-reference').required = action === 'pay';
+  document.querySelector('#commission-void-reason').required = action === 'void';
+}
+
+function openCommission(subscriptionId) {
+  selectedCommission = commissionRecords().find((item) => String(item.subscriptionId) === String(subscriptionId));
+  if (!selectedCommission) return;
+  const snapshot = referralSnapshot(selectedCommission);
+  document.querySelector('#commission-subscription-id').value = selectedCommission.subscriptionId;
+  document.querySelector('#commission-dialog-summary').innerHTML = `<div class="commission-chain" aria-label="分潤計算鏈"><div><span>引薦快照</span><strong>${escapeHtml(snapshotName(selectedCommission))}</strong><small>${escapeHtml(snapshot.referralCode || snapshot.referrerCode || snapshot.code || '—')} · ${escapeHtml(bpsLabel(snapshotRate(selectedCommission)))}</small></div><i aria-hidden="true">→</i><div><span>成交基礎</span><strong>${formatMoney(selectedCommission.commissionBasisAmountTwd, true)}</strong><small>最終分配金額</small></div><i aria-hidden="true">→</i><div><span>系統計提</span><strong>${formatMoney(selectedCommission.commissionAccruedAmountTwd, true)}</strong><small>唯讀，不可改額</small></div></div>`;
+  const action = selectedCommission.commissionState === 'approved' ? 'pay' : selectedCommission.commissionState === 'paid' ? 'pay' : selectedCommission.commissionState === 'void' ? 'void' : 'approve';
+  document.querySelector('#commission-action').value = action;
+  document.querySelector('#commission-action').disabled = ['paid', 'void'].includes(selectedCommission.commissionState);
+  document.querySelector('#commission-approval-reference').value = selectedCommission.commissionApproval?.reference || selectedCommission.commissionApproval?.approvalReference || '';
+  document.querySelector('#commission-payout-reference').value = selectedCommission.commissionPayment?.reference || selectedCommission.commissionPayment?.payoutReference || '';
+  document.querySelector('#commission-void-reason').value = selectedCommission.commissionVoid?.reason || selectedCommission.voidReason || '';
+  document.querySelector('#commission-reason').value = '';
+  const save = document.querySelector('#commission-form [type="submit"]');
+  save.hidden = ['paid', 'void', 'pending', 'not_applicable'].includes(selectedCommission.commissionState);
+  syncCommissionFields();
+  openDialog(commissionDialog);
+}
+
 async function loadDashboard() {
   try {
     const [result, projectResult, bookingResult] = await Promise.all([api.adminDashboard(), api.projects(), api.bookings().catch(() => [])]);
     dashboard = { ...dashboard, ...(result.data || {}) };
     dashboard.members = Array.isArray(dashboard.members) ? dashboard.members : [];
     dashboard.subscriptions = Array.isArray(dashboard.subscriptions) ? dashboard.subscriptions : [];
+    dashboard.referrers = Array.isArray(dashboard.referrers) ? dashboard.referrers : [];
+    dashboard.commissions = Array.isArray(dashboard.commissions) ? dashboard.commissions : [];
     dashboard.bookings = Array.isArray(bookingResult) ? bookingResult : bookingResult?.bookings || bookingResult?.items || [];
     dashboard.actions = Array.isArray(dashboard.actions) ? dashboard.actions : [];
     projects = Array.isArray(projectResult.data) ? projectResult.data : projectResult.data?.projects || [];
@@ -187,6 +378,10 @@ document.addEventListener('click', async (event) => {
   if (memberButton) openMember(memberButton.dataset.memberManage);
   const subscriptionButton = event.target.closest('[data-subscription-manage]');
   if (subscriptionButton) openSubscription(subscriptionButton.dataset.subscriptionManage);
+  const referrerEdit = event.target.closest('[data-referrer-edit]');
+  if (referrerEdit) openReferrer(referrerEdit.dataset.referrerEdit);
+  const commissionButton = event.target.closest('[data-commission-manage]');
+  if (commissionButton) openCommission(commissionButton.dataset.commissionManage);
   const placeholder = event.target.closest('[data-placeholder-action]');
   if (placeholder) toast(`${placeholder.dataset.placeholderAction}已建立介面入口；正式素材與審核流程接入後啟用。`);
   const notification = event.target.closest('[data-notification-send]');
@@ -207,6 +402,12 @@ document.querySelector('#member-form').addEventListener('submit', async (event) 
       qualificationState: data.qualificationState,
       reason: data.reason,
     };
+    if (data.referrerId && !String(data.referralEvidenceReference || '').trim()) {
+      throw new Error('指定引薦方時必須填寫引薦證據參考。');
+    }
+    payload.referralAttribution = data.referrerId
+      ? { referrerId: data.referrerId, evidenceReference: String(data.referralEvidenceReference).trim() }
+      : null;
     if (data.qualificationState === 'approved') {
       if (!data.qualificationApprover || !data.qualificationApprovedAt || !data.qualificationReference || !data.qualificationExpiresAt) {
         throw new Error('資格核准必須填寫合作機構核准人、核准時間、參考編號與到期日。');
@@ -220,11 +421,91 @@ document.querySelector('#member-form').addEventListener('submit', async (event) 
         expiresAt,
       };
     }
-    const updated = await api.updateMember(data.memberId, payload);
-    dashboard.members = dashboard.members.map((item) => item.id === data.memberId ? { ...item, ...updated, membership: updated.membershipState } : item);
-    renderMembers(); renderKpis();
-    closeDialog(memberDialog); toast('會員狀態已更新並寫入稽核紀錄。');
+    const result = await api.updateMember(data.memberId, payload);
+    const updated = result?.member || result;
+    dashboard.members = dashboard.members.map((item) => item.id === data.memberId ? { ...item, ...updated, membership: updated.membershipState || updated.membership } : item);
+    renderMembers(); renderKpis(); renderReferrals();
+    closeDialog(memberDialog); toast('會員狀態與引薦歸屬已更新；只影響未來認購。');
   } catch (error) { toast(`會員狀態未更新：${error.message}`, 'error'); }
+  finally { setButtonBusy(button, false); }
+});
+
+document.querySelector('#referrer-create').addEventListener('click', () => openReferrer());
+
+document.querySelector('#referrer-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  setButtonBusy(button, true, '正在儲存…');
+  try {
+    const fields = Object.fromEntries(new FormData(form));
+    const code = String(fields.code || '').trim().toUpperCase();
+    const duplicate = dashboard.referrers.some((item) => item.id !== fields.referrerId && String(item.code || '').toUpperCase() === code);
+    if (duplicate) throw new Error(`引薦碼 ${code} 已存在，請使用不同代碼。`);
+    const payload = {
+      displayName: String(fields.displayName || '').trim(),
+      code,
+      legalName: String(fields.legalName || '').trim(),
+      contactName: String(fields.contactName || '').trim(),
+      contactEmail: String(fields.contactEmail || '').trim().toLowerCase(),
+      status: fields.status,
+      defaultCommissionRateBps: Number(fields.defaultCommissionRateBps),
+      commissionBasis: 'allocated_amount',
+      agreementReference: String(fields.agreementReference || '').trim(),
+      effectiveAt: new Date(`${fields.effectiveAt}T00:00:00+08:00`).toISOString(),
+      expiresAt: fields.expiresAt ? new Date(`${fields.expiresAt}T00:00:00+08:00`).toISOString() : null,
+      reason: String(fields.reason || '').trim(),
+    };
+    const result = fields.referrerId
+      ? await api.updateReferrer(fields.referrerId, payload)
+      : await api.createReferrer(payload);
+    const saved = result?.referrer || result;
+    dashboard.referrers = fields.referrerId
+      ? dashboard.referrers.map((item) => item.id === fields.referrerId ? { ...item, ...saved } : item)
+      : [...dashboard.referrers, saved];
+    renderReferrals();
+    closeDialog(referrerDialog);
+    toast(fields.referrerId ? '引薦方設定已更新；既有認購快照不變。' : '引薦方已建立，可開始歸屬投資人。');
+  } catch (error) { toast(`引薦方未儲存：${error.message}`, 'error'); }
+  finally { setButtonBusy(button, false); }
+});
+
+document.querySelector('#commission-action').addEventListener('change', syncCommissionFields);
+
+document.querySelector('#commission-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  setButtonBusy(button, true, '正在登錄…');
+  try {
+    const fields = Object.fromEntries(new FormData(form));
+    const payload = { action: fields.action, reason: String(fields.reason || '').trim() };
+    if (!payload.reason) throw new Error('請填寫操作理由。');
+    if (fields.action === 'approve') {
+      if (!String(fields.approvalReference || '').trim()) throw new Error('核准分潤必須填寫核准參考編號。');
+      payload.approvalReference = String(fields.approvalReference).trim();
+    }
+    if (fields.action === 'pay') {
+      if (!String(fields.payoutReference || '').trim()) throw new Error('登錄付款必須填寫付款參考編號。');
+      payload.payoutReference = String(fields.payoutReference).trim();
+    }
+    if (fields.action === 'void') {
+      if (!String(fields.voidReason || '').trim()) throw new Error('作廢分潤必須填寫作廢原因。');
+      payload.voidReason = String(fields.voidReason).trim();
+    }
+    const result = await api.updateCommission(fields.subscriptionId, payload);
+    const updatedCommission = result?.commission || result;
+    const updatedSubscription = result?.subscription || updatedCommission;
+    const currentRecord = commissionRecords().find((item) => item.subscriptionId === fields.subscriptionId) || {};
+    const nextCommission = { ...currentRecord, ...updatedCommission, subscriptionId: fields.subscriptionId };
+    dashboard.commissions = dashboard.commissions.some((item) => (item.subscriptionId || item.id) === fields.subscriptionId)
+      ? dashboard.commissions.map((item) => (item.subscriptionId || item.id) === fields.subscriptionId ? nextCommission : item)
+      : [...dashboard.commissions, nextCommission];
+    dashboard.subscriptions = dashboard.subscriptions.map((item) => item.id === fields.subscriptionId ? { ...item, ...updatedSubscription } : item);
+    renderReferrals(); renderSubscriptions();
+    closeDialog(commissionDialog);
+    toast(fields.action === 'approve' ? '分潤已核准並保留核准證據。' : fields.action === 'pay' ? '付款參考已登錄。' : '分潤已作廢並保留原因。');
+  } catch (error) { toast(`分潤操作未完成：${error.message}`, 'error'); }
   finally { setButtonBusy(button, false); }
 });
 
@@ -248,7 +529,15 @@ document.querySelector('#subscription-admin-form').addEventListener('submit', as
     }
     const updated = await api.updateSubscription(fields.subscriptionId, payload);
     dashboard.subscriptions = dashboard.subscriptions.map((item) => item.id === fields.subscriptionId ? { ...item, ...updated } : item);
-    renderSubscriptions(); renderKpis(); renderActions();
+    const hasCommission = dashboard.commissions.some((item) => (item.subscriptionId || item.id) === fields.subscriptionId);
+    dashboard.commissions = hasCommission
+      ? dashboard.commissions.map((item) => (item.subscriptionId || item.id) === fields.subscriptionId
+        ? { ...item, ...updated, subscriptionId: fields.subscriptionId }
+        : item)
+      : updated.referralSnapshot
+        ? [...dashboard.commissions, { ...updated, subscriptionId: fields.subscriptionId }]
+        : dashboard.commissions;
+    renderSubscriptions(); renderReferrals(); renderKpis(); renderActions();
     closeDialog(subscriptionDialog); toast('認購流程已更新，變更前後值已保留。');
   } catch (error) { toast(`認購流程未更新：${error.message}`, 'error'); }
   finally { setButtonBusy(button, false); }
@@ -256,6 +545,7 @@ document.querySelector('#subscription-admin-form').addEventListener('submit', as
 
 ['member-search', 'member-filter'].forEach((id) => document.querySelector(`#${id}`).addEventListener('input', renderMembers));
 ['subscription-search', 'subscription-filter'].forEach((id) => document.querySelector(`#${id}`).addEventListener('input', renderSubscriptions));
+document.querySelector('#commission-filter').addEventListener('input', () => renderCommissionRows(commissionRecords()));
 document.querySelector('#notification-refresh').addEventListener('click', loadNotifications);
 document.querySelector('#audit-refresh').addEventListener('click', loadAudits);
 window.addEventListener('hashchange', () => showView(location.hash.slice(1), false));

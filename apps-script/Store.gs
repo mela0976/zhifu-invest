@@ -5,7 +5,7 @@ var ZF_SCHEMA = Object.freeze({
     'id', 'demo', 'displayName', 'legalName', 'phone', 'email', 'lineUserId', 'lineFriendshipState',
     'sourceGroup', 'membershipState', 'qualificationState', 'qualificationApprover',
     'qualificationApprovedAt', 'qualificationReference', 'qualificationExpiresAt',
-    'tier', 'projectAccessJson', 'createdAt', 'updatedAt'
+    'tier', 'projectAccessJson', 'createdAt', 'updatedAt', 'referralAttributionJson'
   ],
   Projects: [
     'id', 'demo', 'slug', 'publicVisibility', 'displayName', 'industry', 'stage', 'region',
@@ -19,7 +19,15 @@ var ZF_SCHEMA = Object.freeze({
     'subscriptionState', 'fundingState', 'allocationState', 'requestedAmountTwd',
     'approvedAmountTwd', 'receivedAmountTwd', 'allocatedAmountTwd', 'refundedAmountTwd',
     'riskAcknowledged', 'riskAcknowledgedAt', 'riskDisclosureVersion',
-    'partnerApprover', 'partnerApprovedAt', 'partnerReference', 'createdAt', 'updatedAt'
+    'partnerApprover', 'partnerApprovedAt', 'partnerReference', 'createdAt', 'updatedAt',
+    'referralSnapshotJson', 'commissionState', 'commissionBasisAmountTwd',
+    'commissionAccruedAmountTwd', 'commissionApprovalJson', 'commissionPaymentJson',
+    'commissionVoidReason'
+  ],
+  Referrers: [
+    'id', 'demo', 'code', 'displayName', 'legalName', 'contactName', 'contactEmail',
+    'status', 'defaultCommissionRateBps', 'commissionBasis', 'agreementReference',
+    'effectiveAt', 'expiresAt', 'createdAt', 'updatedAt'
   ],
   Bookings: [
     'id', 'demo', 'memberId', 'displayName', 'phone', 'email', 'advisorType', 'topic',
@@ -92,6 +100,41 @@ function initializeWorkbookSchema_(workbook) {
   });
 }
 
+function migrateReferralCommissionSchema_(workbook) {
+  var additions = {
+    Members: ['referralAttributionJson'],
+    Subscriptions: [
+      'referralSnapshotJson', 'commissionState', 'commissionBasisAmountTwd',
+      'commissionAccruedAmountTwd', 'commissionApprovalJson', 'commissionPaymentJson',
+      'commissionVoidReason'
+    ]
+  };
+  Object.keys(additions).forEach(function (sheetName) {
+    var sheet = workbook.getSheetByName(sheetName);
+    if (!sheet) throw domainError_('Missing sheet: ' + sheetName, 'configuration_error', 500);
+    var lastColumn = sheet.getLastColumn();
+    var actual = lastColumn ? sheet.getRange(1, 1, 1, lastColumn).getValues()[0] : [];
+    var expected = ZF_SCHEMA[sheetName];
+    var legacy = expected.slice(0, expected.length - additions[sheetName].length);
+    if (JSON.stringify(actual) === JSON.stringify(expected)) return;
+    if (JSON.stringify(actual) !== JSON.stringify(legacy)) {
+      throw domainError_('Schema mismatch in ' + sheetName + '. Back up the workbook before migrating.', 'schema_mismatch', 500);
+    }
+    sheet.getRange(1, actual.length + 1, 1, additions[sheetName].length)
+      .setValues([additions[sheetName]])
+      .setBackground('#10243e').setFontColor('#ffffff').setFontWeight('bold');
+  });
+  var referrers = workbook.getSheetByName('Referrers');
+  if (!referrers) referrers = workbook.insertSheet('Referrers');
+  if (referrers.getLastRow() === 0) {
+    referrers.getRange(1, 1, 1, ZF_SCHEMA.Referrers.length).setValues([ZF_SCHEMA.Referrers]);
+    referrers.setFrozenRows(1);
+    referrers.getRange(1, 1, 1, ZF_SCHEMA.Referrers.length)
+      .setBackground('#10243e').setFontColor('#ffffff').setFontWeight('bold');
+  }
+  initializeWorkbookSchema_(workbook);
+}
+
 function sheet_(sheetName) {
   var expected = ZF_SCHEMA[sheetName];
   if (!expected) throw domainError_('Unknown sheet: ' + sheetName, 'configuration_error', 500);
@@ -124,6 +167,7 @@ function entityToRow_(sheetName, entity) {
   var row = Object.assign({}, entity);
   if (sheetName === 'Members') {
     row.projectAccessJson = JSON.stringify(entity.projectAccess || []);
+    row.referralAttributionJson = JSON.stringify(entity.referralAttribution || null);
     row.qualificationApprover = entity.qualificationApproval ? entity.qualificationApproval.approver : '';
     row.qualificationApprovedAt = entity.qualificationApproval ? entity.qualificationApproval.approvedAt : '';
     row.qualificationReference = entity.qualificationApproval ? entity.qualificationApproval.reference : '';
@@ -133,6 +177,9 @@ function entityToRow_(sheetName, entity) {
       row[field + 'Json'] = JSON.stringify(entity[field] === undefined ? null : entity[field]);
     });
   } else if (sheetName === 'Subscriptions') {
+    row.referralSnapshotJson = JSON.stringify(entity.referralSnapshot || null);
+    row.commissionApprovalJson = JSON.stringify(entity.commissionApproval || null);
+    row.commissionPaymentJson = JSON.stringify(entity.commissionPayment || null);
     row.partnerApprover = entity.partnerApproval ? entity.partnerApproval.approver : '';
     row.partnerApprovedAt = entity.partnerApproval ? entity.partnerApproval.approvedAt : '';
     row.partnerReference = entity.partnerApproval ? entity.partnerApproval.reference : '';
@@ -159,17 +206,22 @@ function rowToEntity_(sheetName, values) {
       reference: row.qualificationReference,
       expiresAt: row.qualificationExpiresAt || ''
     } : null;
+    row.referralAttribution = row.referralAttributionJson || null;
     delete row.projectAccessJson;
     delete row.qualificationApprover;
     delete row.qualificationApprovedAt;
     delete row.qualificationReference;
     delete row.qualificationExpiresAt;
+    delete row.referralAttributionJson;
   } else if (sheetName === 'Projects') {
     ['highlights', 'useOfFunds', 'risks', 'reports', 'deck', 'memberAllowlist'].forEach(function (field) {
       row[field] = row[field + 'Json'];
       delete row[field + 'Json'];
     });
   } else if (sheetName === 'Subscriptions') {
+    row.referralSnapshot = row.referralSnapshotJson || null;
+    row.commissionApproval = row.commissionApprovalJson || null;
+    row.commissionPayment = row.commissionPaymentJson || null;
     row.partnerApproval = row.partnerReference ? {
       approver: row.partnerApprover,
       approvedAt: row.partnerApprovedAt,
@@ -178,6 +230,9 @@ function rowToEntity_(sheetName, values) {
     delete row.partnerApprover;
     delete row.partnerApprovedAt;
     delete row.partnerReference;
+    delete row.referralSnapshotJson;
+    delete row.commissionApprovalJson;
+    delete row.commissionPaymentJson;
   } else if (sheetName === 'Audits') {
     row.actor = row.actorJson;
     row.before = row.beforeJson;
@@ -270,6 +325,29 @@ function recordsToCsv_(sheetName, records) {
   var lines = [headers.map(csvEscape_).join(',')];
   records.forEach(function (entity) {
     lines.push(entityToRow_(sheetName, entity).map(csvEscape_).join(','));
+  });
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+function commissionRecordsToCsv_(records) {
+  var headers = [
+    'subscriptionId', 'memberId', 'memberName', 'projectId', 'projectName',
+    'referrerId', 'referrerName', 'referralCode', 'commissionRateBps', 'commissionBasis',
+    'agreementReference', 'commissionState', 'commissionBasisAmountTwd',
+    'commissionAccruedAmountTwd', 'commissionApproval', 'commissionPayment',
+    'commissionVoidReason', 'updatedAt'
+  ];
+  var lines = [headers.map(csvEscape_).join(',')];
+  records.forEach(function (record) {
+    var snapshot = record.referralSnapshot || {};
+    var row = [
+      record.id, record.memberId, record.memberName, record.projectId, record.projectName,
+      snapshot.referrerId, snapshot.referrerName, snapshot.referralCode, snapshot.commissionRateBps,
+      snapshot.commissionBasis, snapshot.agreementReference, record.commissionState,
+      record.commissionBasisAmountTwd, record.commissionAccruedAmountTwd,
+      record.commissionApproval, record.commissionPayment, record.commissionVoidReason, record.updatedAt
+    ];
+    lines.push(row.map(csvEscape_).join(','));
   });
   return '\uFEFF' + lines.join('\r\n');
 }

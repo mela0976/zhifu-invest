@@ -39,8 +39,9 @@
     <section id="kpis" class="kpis" aria-label="營運指標"></section>
     <div class="toolbar">
       <button onclick="listResource('members')">會員</button><button onclick="listResource('subscriptions')">認購</button>
+      <button onclick="listResource('referrers')">引薦方</button><button onclick="listResource('commissions')">分潤</button><button onclick="newReferrer()">新增引薦方</button>
       <button onclick="listResource('activations')">啟用申請</button><button onclick="listResource('notifications')">通知佇列</button><button onclick="listResource('audits')">稽核</button>
-      <button class="secondary" onclick="exportResource('subscriptions')">匯出認購 CSV</button><button class="secondary" onclick="exportResource('audits')">匯出稽核 CSV</button>
+      <button class="secondary" onclick="exportResource('subscriptions')">匯出認購 CSV</button><button class="secondary" onclick="exportResource('referrers')">匯出引薦方 CSV</button><button class="secondary" onclick="exportResource('commissions')">匯出分潤 CSV</button><button class="secondary" onclick="exportResource('audits')">匯出稽核 CSV</button>
     </div>
     <div class="grid"><section class="card"><h2>待處理事項</h2><div id="actions" class="rows"></div></section><section class="card"><h2 id="listTitle">近期認購</h2><div id="records" class="rows"></div></section></div>
   </main>
@@ -57,12 +58,33 @@
     <label>投資資格<select name="qualificationState"><option value="not_applied">未申請</option><option value="reviewing">審核中</option><option value="needs_information">待補件</option><option value="approved">已核准</option><option value="rejected">未通過</option><option value="expired">已到期</option></select></label>
     <label>合作機構／實際核准人<input name="qualificationApprover" autocomplete="off"><span class="hint">不得使用示意核准人；請輸入證據上的實際人員或機構。</span></label>
     <label>核准時間<input name="qualificationApprovedAt" type="datetime-local"></label><label>核准參考編號<input name="qualificationReference"></label><label>資格到期日<input name="qualificationExpiresAt" type="date"></label>
+    <div><strong>引薦歸因</strong><div id="referralEvidence" class="evidence">尚無來源聲明</div></div>
+    <label>管理員驗證引薦方<select name="referrerId"><option value="">不變更</option></select><span class="hint">來源碼本身只是 claimed；選擇引薦方並填寫證據後才會建立 verified 歸因。</span></label>
+    <label>引薦驗證證據編號<input name="referralEvidenceReference" autocomplete="off"></label>
+    <label><span><input name="clearReferralVerification" type="checkbox" style="width:auto"> 清除既有引薦驗證（不影響已建立的認購快照）</span></label>
     <label>可查看的募資專案<select name="projectAccess" class="projects" multiple></select><span class="hint">按住 Ctrl／⌘ 可選多項；未選即不授予逐案存取權。</span></label>
     <label>異動理由<textarea name="reason" required placeholder="例如：已核對來源碼、同意時間與 LINE 好友證據"></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#memberDialog').close()">取消</button><button>確認並儲存</button></div>
   </form></dialog>
+  <dialog id="referrerDialog"><form onsubmit="saveReferrer(event)"><h2>管理引薦方</h2><input type="hidden" name="referrerId">
+    <label>來源碼<input name="code" maxlength="100" required><span class="hint">比對時不分大小寫並保存為大寫；修改時會重新檢查全站唯一。</span></label>
+    <label>顯示名稱<input name="displayName" maxlength="200" required></label>
+    <label>法定名稱<input name="legalName" maxlength="200" required></label>
+    <label>聯絡人<input name="contactName" maxlength="200" required></label>
+    <label>聯絡信箱<input name="contactEmail" type="email" maxlength="200" required></label>
+    <label>狀態<select name="status"><option value="active">active</option><option value="disabled">disabled</option></select></label>
+    <label>預設分潤 bps<input name="defaultCommissionRateBps" type="number" min="0" max="10000" step="1" required><span class="hint">100 bps = 1%；計算基礎固定為 allocated_amount。</span></label>
+    <label>協議參考編號<input name="agreementReference" maxlength="200" required></label>
+    <label>生效起點<input name="effectiveAt" type="datetime-local" required></label><label>生效終點<input name="expiresAt" type="datetime-local"></label>
+    <label>異動理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#referrerDialog').close()">取消</button><button>儲存並稽核</button></div>
+  </form></dialog>
+  <dialog id="commissionDialog"><form onsubmit="saveCommission(event)"><h2>分潤動作</h2><input type="hidden" name="subscriptionId"><div id="commissionEvidence" class="evidence"></div>
+    <label>動作<select name="action"><option value="approve">approve</option><option value="pay">pay</option><option value="void">void</option></select></label>
+    <label data-for="approve">核准證據編號<input name="approvalReference"></label><label data-for="pay">付款證據編號<input name="payoutReference"></label><label data-for="void">作廢原因<input name="voidReason"></label>
+    <label>操作理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#commissionDialog').close()">取消</button><button>確認並留下稽核</button></div>
+  </form></dialog>
   <script>
     const SESSION_KEY='zhifuAdminSession';
-    const state={subscriptions:new Map(),members:new Map(),projects:[],activations:[]};
+    const state={subscriptions:new Map(),members:new Map(),referrers:new Map(),commissions:new Map(),projects:[],activations:[]};
     const money=value=>new Intl.NumberFormat('zh-TW',{style:'currency',currency:'TWD',maximumFractionDigits:0}).format(Number(value||0));
     const serverCall=(name,...args)=>new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[name](...args));
     function sessionToken(){return window.sessionStorage.getItem(SESSION_KEY)||''}
@@ -78,16 +100,106 @@
     async function bootstrap(){const token=sessionToken();if(!token)return closeDashboard('');try{const result=await serverCall('adminSessionStatus',token);if(!result.ok)throw new Error(result.error.message);openDashboard(result.data.email);await loadDashboard()}catch(error){window.sessionStorage.removeItem(SESSION_KEY);closeDashboard(error.message)}}
     document.querySelector('#totpForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget;const code=new FormData(form).get('code');setAuthStatus('驗證中…');try{const result=await serverCall('adminAuthenticateTotp',code);if(!result.ok)throw new Error(result.error.message);window.sessionStorage.setItem(SESSION_KEY,result.data.token);form.reset();openDashboard(result.data.email);await loadDashboard()}catch(error){setAuthStatus(error.message,true)}});
     async function logoutAdmin(){const token=sessionToken();window.sessionStorage.removeItem(SESSION_KEY);if(token)await serverCall('adminLogout',token).catch(()=>{});closeDashboard('已登出。')}
-    async function loadDashboard(){try{setStatus('載入中…');const [data,projects,activations]=await Promise.all([rpc('adminDashboard'),rpc('adminList',{resource:'projects',limit:500}),rpc('adminList',{resource:'activations',limit:500})]);state.projects=projects.records;state.activations=activations.records;const labels={members:'會員',pendingMembers:'待確認會員',qualifiedMembers:'合格會員',projects:'專案',subscriptions:'認購筆數',requestedAmountTwd:'申請總額',approvedAmountTwd:'核准總額',receivedAmountTwd:'到帳總額',allocatedAmountTwd:'配置總額',refundedAmountTwd:'退款總額',notificationActions:'通知待辦'};document.querySelector('#kpis').innerHTML=Object.entries(labels).map(([key,label])=>`<article class="card"><div class="metric">${key.endsWith('Twd')?money(data.kpis[key]):esc(data.kpis[key])}</div><div class="label">${label}</div></article>`).join('');state.subscriptions=new Map(data.recentSubscriptions.map(record=>[record.id,record]));renderSubscriptions(data.recentSubscriptions);renderActions(data.actionQueue);setStatus(`資料更新：${new Date(data.generatedAt).toLocaleString('zh-TW')}`)}catch(error){if(/session|驗證|expired/i.test(error.message)){window.sessionStorage.removeItem(SESSION_KEY);closeDashboard(error.message)}else setStatus(error.message,true)}}
+    async function loadDashboard(){
+      try{
+        setStatus('載入中…');
+        const [data,projects,activations,referrers]=await Promise.all([
+          rpc('adminDashboard'),rpc('adminList',{resource:'projects',limit:500}),
+          rpc('adminList',{resource:'activations',limit:500}),rpc('adminList',{resource:'referrers',limit:500})
+        ]);
+        state.projects=projects.records;state.activations=activations.records;
+        state.referrers=new Map(referrers.records.map(record=>[record.id,record]));
+        const labels={members:'會員',pendingMembers:'待確認會員',qualifiedMembers:'合格會員',projects:'專案',subscriptions:'認購筆數',referrerCount:'引薦方',attributedMemberCount:'已驗證歸因會員',commissionAccruedAmountTwd:'已發生分潤',commissionApprovedAmountTwd:'已核准分潤',commissionPaidAmountTwd:'已付分潤',requestedAmountTwd:'申請總額',approvedAmountTwd:'核准總額',receivedAmountTwd:'到帳總額',allocatedAmountTwd:'配置總額',refundedAmountTwd:'退款總額',notificationActions:'通知待辦'};
+        document.querySelector('#kpis').innerHTML=Object.entries(labels).map(([key,label])=>`<article class="card"><div class="metric">${key.endsWith('Twd')?money(data.kpis[key]):esc(data.kpis[key])}</div><div class="label">${label}</div></article>`).join('');
+        state.subscriptions=new Map(data.recentSubscriptions.map(record=>[record.id,record]));renderSubscriptions(data.recentSubscriptions);renderActions(data.actionQueue);setStatus(`資料更新：${new Date(data.generatedAt).toLocaleString('zh-TW')}`)
+      }catch(error){if(/session|驗證|expired/i.test(error.message)){window.sessionStorage.removeItem(SESSION_KEY);closeDashboard(error.message)}else setStatus(error.message,true)}
+    }
     function renderSubscriptions(records){document.querySelector('#listTitle').textContent='近期認購';document.querySelector('#records').innerHTML=records.map(record=>`<div class="row"><div><strong>${esc(record.memberName||record.memberId)}</strong><br><span class="label">${esc(record.projectName||record.projectId)}・${esc(record.id)}</span><br><span class="money">申請 ${money(record.requestedAmountTwd)}／核准 ${money(record.approvedAmountTwd)}／到帳 ${money(record.receivedAmountTwd)}／配置 ${money(record.allocatedAmountTwd)}／退款 ${money(record.refundedAmountTwd)}</span></div><div><span class="stamp">${esc(record.subscriptionState)}</span><br><button onclick="editSubscription(${jsArg(record.id)})">確認／更新</button></div></div>`).join('')||'目前沒有紀錄'}
-    function renderActions(queue){state.members=new Map(queue.members.map(record=>[record.id,record]));const items=[...queue.members.map(record=>({title:record.legalName||record.displayName,meta:'會員待確認 '+record.id,action:`<button onclick="editMember(${jsArg(record.id)})">確認會員</button>`})),...queue.subscriptions.map(record=>({title:record.memberName||record.id,meta:'認購 '+record.subscriptionState,action:''})),...queue.notifications.map(record=>({title:record.eventType,meta:'通知 '+record.state,action:''}))];document.querySelector('#actions').innerHTML=items.map(item=>`<div class="row"><div><strong>${esc(item.title)}</strong><br><span class="label">${esc(item.meta)}</span></div>${item.action}</div>`).join('')||'目前沒有待辦'}
-    async function listResource(resource){try{const data=await rpc('adminList',{resource,limit:100});document.querySelector('#listTitle').textContent={members:'會員',subscriptions:'認購',activations:'啟用申請',notifications:'通知佇列',audits:'稽核'}[resource]||resource;if(resource==='subscriptions'){state.subscriptions=new Map(data.records.map(record=>[record.id,record]));return renderSubscriptions(data.records)}if(resource==='members')state.members=new Map(data.records.map(record=>[record.id,record]));document.querySelector('#records').innerHTML=data.records.map(record=>`<div class="row"><div><strong>${esc(record.legalName||record.displayName||record.eventType||record.action||record.fullName||record.id)}</strong><br><span class="label">${esc(resource==='activations'?`來源 ${record.sourceCode||'待補'}・同意 ${record.consentedAt||'待補'}・LINE ${record.lineFriendshipState||'無證據'}`:(record.membershipState||record.state||record.createdAt||''))}</span></div>${resource==='members'?`<button onclick="editMember(${jsArg(record.id)})">確認／管理</button>`:record.state==='pending_manual'?`<button onclick="approveNotification(${jsArg(record.id)})">人工核准</button>`:''}</div>`).join('')||'目前沒有紀錄'}catch(error){setStatus(error.message,true)}}
+    function renderActions(queue){
+      state.members=new Map(queue.members.map(record=>[record.id,record]));
+      for(const record of queue.commissions||[])state.commissions.set(record.id,record);
+      const items=[
+        ...queue.members.map(record=>({title:record.legalName||record.displayName,meta:'會員待確認 '+record.id,action:`<button onclick="editMember(${jsArg(record.id)})">確認會員</button>`})),
+        ...queue.subscriptions.map(record=>({title:record.memberName||record.id,meta:'認購 '+record.subscriptionState,action:''})),
+        ...(queue.commissions||[]).map(record=>({title:record.referrerName||record.id,meta:`分潤 ${record.commissionState}・${money(record.commissionAccruedAmountTwd)}`,action:`<button onclick="editCommission(${jsArg(record.id)})">處理分潤</button>`})),
+        ...queue.notifications.map(record=>({title:record.eventType,meta:'通知 '+record.state,action:''}))
+      ];
+      document.querySelector('#actions').innerHTML=items.map(item=>`<div class="row"><div><strong>${esc(item.title)}</strong><br><span class="label">${esc(item.meta)}</span></div>${item.action}</div>`).join('')||'目前沒有待辦'
+    }
+    function renderReferrers(records){
+      state.referrers=new Map(records.map(record=>[record.id,record]));
+      document.querySelector('#records').innerHTML=records.map(record=>`<div class="row"><div><strong>${esc(record.displayName)}</strong><br><span class="label">${esc(record.code)}・${esc(record.status)}・${esc(record.defaultCommissionRateBps)} bps<br>${esc(record.legalName)}｜${esc(record.contactName)}｜${esc(record.contactEmail)}<br>協議 ${esc(record.agreementReference)}｜${esc(record.effectiveAt)} ～ ${esc(record.expiresAt||'無期限')}</span></div><button onclick="editReferrer(${jsArg(record.id)})">管理</button></div>`).join('')||'目前沒有引薦方'
+    }
+    function renderCommissions(records){
+      state.commissions=new Map(records.map(record=>[record.id,record]));
+      document.querySelector('#records').innerHTML=records.map(record=>`<div class="row"><div><strong>${esc(record.referrerName||record.referrerCode)}</strong><br><span class="label">${esc(record.memberName)}・${esc(record.projectName)}・${esc(record.id)}<br>計算基礎 ${money(record.commissionBasisAmountTwd)} × ${esc(record.referralSnapshot?.commissionRateBps||0)} bps = ${money(record.commissionAccruedAmountTwd)}</span></div><div><span class="stamp">${esc(record.commissionState)}</span><br>${['accrued','approved'].includes(record.commissionState)?`<button onclick="editCommission(${jsArg(record.id)})">處理</button>`:''}</div></div>`).join('')||'目前沒有可分潤認購'
+    }
+    async function listResource(resource){
+      try{
+        const data=await rpc('adminList',{resource,limit:100});
+        document.querySelector('#listTitle').textContent={members:'會員',subscriptions:'認購',referrers:'引薦方',commissions:'分潤',activations:'啟用申請',notifications:'通知佇列',audits:'稽核'}[resource]||resource;
+        if(resource==='subscriptions'){state.subscriptions=new Map(data.records.map(record=>[record.id,record]));return renderSubscriptions(data.records)}
+        if(resource==='referrers')return renderReferrers(data.records);
+        if(resource==='commissions')return renderCommissions(data.records);
+        if(resource==='members')state.members=new Map(data.records.map(record=>[record.id,record]));
+        document.querySelector('#records').innerHTML=data.records.map(record=>`<div class="row"><div><strong>${esc(record.legalName||record.displayName||record.eventType||record.action||record.fullName||record.id)}</strong><br><span class="label">${esc(resource==='activations'?`來源 ${record.sourceCode||'待補'}・同意 ${record.consentedAt||'待補'}・LINE ${record.lineFriendshipState||'無證據'}`:(record.membershipState||record.state||record.createdAt||''))}</span></div>${resource==='members'?`<button onclick="editMember(${jsArg(record.id)})">確認／管理</button>`:record.state==='pending_manual'?`<button onclick="approveNotification(${jsArg(record.id)})">人工核准</button>`:''}</div>`).join('')||'目前沒有紀錄'
+      }catch(error){setStatus(error.message,true)}
+    }
     function editSubscription(id){const record=state.subscriptions.get(id);if(!record)return;const dialog=document.querySelector('#subscriptionDialog');const form=dialog.querySelector('form');for(const [key,value] of Object.entries(record))if(form.elements[key])form.elements[key].value=value??'';if(record.partnerApproval){form.elements.partnerApprover.value=record.partnerApproval.approver;form.elements.partnerApprovedAt.value=String(record.partnerApproval.approvedAt).slice(0,16);form.elements.partnerReference.value=record.partnerApproval.reference}dialog.showModal()}
     async function saveSubscription(event){event.preventDefault();const values=new FormData(event.currentTarget);try{let approval;if(values.get('partnerReference')){if(!values.get('partnerApprover')||!values.get('partnerApprovedAt'))throw new Error('填寫核准編號時，合作機構核准人與日期也必填。');approval={approver:values.get('partnerApprover'),approvedAt:new Date(values.get('partnerApprovedAt')).toISOString(),reference:values.get('partnerReference')}}const patch={subscriptionState:values.get('subscriptionState'),approvedAmountTwd:Number(values.get('approvedAmountTwd')),receivedAmountTwd:Number(values.get('receivedAmountTwd')),allocatedAmountTwd:Number(values.get('allocatedAmountTwd')),refundedAmountTwd:Number(values.get('refundedAmountTwd'))};if(approval)patch.partnerApproval=approval;await rpc('adminPatchSubscription',{subscriptionId:values.get('subscriptionId'),patch,reason:values.get('reason')});document.querySelector('#subscriptionDialog').close();await loadDashboard()}catch(error){setStatus(error.message,true)}}
     async function approveNotification(id){try{await rpc('adminApproveNotification',{notificationId:id,reason:'雪芬姐後台人工核准'});await listResource('notifications')}catch(error){setStatus(error.message,true)}}
     function latestActivation(memberId){return state.activations.filter(record=>record.memberId===memberId).sort((left,right)=>String(right.createdAt).localeCompare(String(left.createdAt)))[0]||null}
-    function editMember(id){const record=state.members.get(id);if(!record)return;const dialog=document.querySelector('#memberDialog');const form=dialog.querySelector('form');const approval=record.qualificationApproval||{};const activation=latestActivation(record.id);form.elements.memberId.value=record.id;form.elements.membershipState.value=record.membershipState;form.elements.qualificationState.value=record.qualificationState;form.elements.qualificationApprover.value=approval.approver||'';form.elements.qualificationApprovedAt.value=approval.approvedAt?new Date(approval.approvedAt).toISOString().slice(0,16):'';form.elements.qualificationReference.value=approval.reference||'';form.elements.qualificationExpiresAt.value=String(approval.expiresAt||'').slice(0,10);form.elements.projectAccess.innerHTML=state.projects.map(project=>`<option value="${esc(project.id)}">${esc(project.displayName||project.id)}</option>`).join('');[...form.elements.projectAccess.options].forEach(option=>{option.selected=(record.projectAccess||[]).includes(option.value)});form.elements.reason.value='';syncQualificationRequirements();document.querySelector('#memberSummary').textContent=`${record.legalName||record.displayName}｜${record.phone||'手機待補'}｜會員 LINE 狀態：${record.lineFriendshipState||'unknown'}`;document.querySelector('#activationEvidence').textContent=activation?`來源碼：${activation.sourceCode||'待補'}\n來源：${activation.sourceName||'待補'}\n同意時間：${activation.consentedAt||'待補'}\n伺服器 LINE 好友證據：${activation.lineFriendshipState||'無'}`:'尚無啟用申請；不可只靠畫面勾選認定為 LINE 好友。';dialog.showModal()}
-    async function saveMember(event){event.preventDefault();const values=new FormData(event.currentTarget);try{const patch={membershipState:values.get('membershipState'),qualificationState:values.get('qualificationState'),projectAccess:values.getAll('projectAccess')};if(patch.qualificationState==='approved'){if(!values.get('qualificationApprover')||!values.get('qualificationApprovedAt')||!values.get('qualificationReference')||!values.get('qualificationExpiresAt'))throw new Error('資格核准必須填寫實際核准人、核准時間、參考編號與到期日。');patch.qualificationApproval={approver:values.get('qualificationApprover'),approvedAt:new Date(values.get('qualificationApprovedAt')).toISOString(),reference:values.get('qualificationReference'),expiresAt:new Date(values.get('qualificationExpiresAt')+'T23:59:59+08:00').toISOString()}}await rpc('adminPatchMember',{memberId:values.get('memberId'),patch,reason:values.get('reason')});document.querySelector('#memberDialog').close();await loadDashboard()}catch(error){setStatus(error.message,true)}}
+    function editMember(id){
+      const record=state.members.get(id);if(!record)return;
+      const dialog=document.querySelector('#memberDialog');const form=dialog.querySelector('form');const approval=record.qualificationApproval||{};const activation=latestActivation(record.id);const attribution=record.referralAttribution||null;
+      form.elements.memberId.value=record.id;form.elements.membershipState.value=record.membershipState;form.elements.qualificationState.value=record.qualificationState;form.elements.qualificationApprover.value=approval.approver||'';form.elements.qualificationApprovedAt.value=approval.approvedAt?new Date(approval.approvedAt).toISOString().slice(0,16):'';form.elements.qualificationReference.value=approval.reference||'';form.elements.qualificationExpiresAt.value=String(approval.expiresAt||'').slice(0,10);
+      form.elements.projectAccess.innerHTML=state.projects.map(project=>`<option value="${esc(project.id)}">${esc(project.displayName||project.id)}</option>`).join('');[...form.elements.projectAccess.options].forEach(option=>{option.selected=(record.projectAccess||[]).includes(option.value)});
+      form.elements.referrerId.innerHTML='<option value="">不變更</option>'+[...state.referrers.values()].map(referrer=>`<option value="${esc(referrer.id)}">${esc(referrer.displayName)}（${esc(referrer.code)}・${esc(referrer.status)}）</option>`).join('');
+      form.elements.referrerId.value='';form.elements.referralEvidenceReference.value='';form.elements.clearReferralVerification.checked=false;form.elements.reason.value='';syncQualificationRequirements();
+      document.querySelector('#memberSummary').textContent=`${record.legalName||record.displayName}｜${record.phone||'手機待補'}｜會員 LINE 狀態：${record.lineFriendshipState||'unknown'}`;
+      document.querySelector('#activationEvidence').textContent=activation?`來源碼：${activation.sourceCode||'待補'}\n來源：${activation.sourceName||'待補'}\n同意時間：${activation.consentedAt||'待補'}\n伺服器 LINE 好友證據：${activation.lineFriendshipState||'無'}`:'尚無啟用申請；不可只靠畫面勾選認定為 LINE 好友。';
+      document.querySelector('#referralEvidence').textContent=attribution?`${attribution.state}：${attribution.referralCode||'無'}｜${attribution.claimedAt||''}\n驗證證據：${attribution.evidenceReference||'無'}｜${attribution.verifiedBy||''}｜${attribution.verifiedAt||''}`:'尚無有效來源歸因';
+      dialog.showModal()
+    }
+    async function saveMember(event){
+      event.preventDefault();const values=new FormData(event.currentTarget);
+      try{
+        const patch={membershipState:values.get('membershipState'),qualificationState:values.get('qualificationState'),projectAccess:values.getAll('projectAccess')};
+        if(patch.qualificationState==='approved'){if(!values.get('qualificationApprover')||!values.get('qualificationApprovedAt')||!values.get('qualificationReference')||!values.get('qualificationExpiresAt'))throw new Error('資格核准必須填寫實際核准人、核准時間、參考編號與到期日。');patch.qualificationApproval={approver:values.get('qualificationApprover'),approvedAt:new Date(values.get('qualificationApprovedAt')).toISOString(),reference:values.get('qualificationReference'),expiresAt:new Date(values.get('qualificationExpiresAt')+'T23:59:59+08:00').toISOString()}}
+        if(values.get('clearReferralVerification'))patch.referralAttribution=null;
+        else if(values.get('referrerId')||values.get('referralEvidenceReference')){if(!values.get('referrerId')||!values.get('referralEvidenceReference'))throw new Error('驗證引薦歸因時，引薦方與證據編號都必填。');patch.referralAttribution={referrerId:values.get('referrerId'),evidenceReference:values.get('referralEvidenceReference')}}
+        await rpc('adminPatchMember',{memberId:values.get('memberId'),patch,reason:values.get('reason')});document.querySelector('#memberDialog').close();await loadDashboard()
+      }catch(error){setStatus(error.message,true)}
+    }
+    function newReferrer(){
+      const form=document.querySelector('#referrerDialog form');form.reset();form.elements.referrerId.value='';form.elements.code.disabled=false;form.elements.status.value='active';form.elements.effectiveAt.value=new Date().toISOString().slice(0,16);document.querySelector('#referrerDialog').showModal()
+    }
+    function editReferrer(id){
+      const record=state.referrers.get(id);if(!record)return;const form=document.querySelector('#referrerDialog form');form.reset();form.elements.referrerId.value=record.id;form.elements.code.value=record.code;form.elements.code.disabled=false;for(const name of ['displayName','legalName','contactName','contactEmail','status','defaultCommissionRateBps','agreementReference'])form.elements[name].value=record[name]??'';form.elements.effectiveAt.value=String(record.effectiveAt).slice(0,16);form.elements.expiresAt.value=record.expiresAt?String(record.expiresAt).slice(0,16):'';document.querySelector('#referrerDialog').showModal()
+    }
+    async function saveReferrer(event){
+      event.preventDefault();const values=new FormData(event.currentTarget);const referrerId=values.get('referrerId');
+      try{
+        const record={code:values.get('code'),displayName:values.get('displayName'),legalName:values.get('legalName'),contactName:values.get('contactName'),contactEmail:values.get('contactEmail'),status:values.get('status'),defaultCommissionRateBps:Number(values.get('defaultCommissionRateBps')),commissionBasis:'allocated_amount',agreementReference:values.get('agreementReference'),effectiveAt:new Date(values.get('effectiveAt')).toISOString(),expiresAt:values.get('expiresAt')?new Date(values.get('expiresAt')).toISOString():null};
+        if(referrerId)await rpc('adminPatchReferrer',{referrerId,patch:record,reason:values.get('reason')});
+        else await rpc('adminCreateReferrer',{referrer:record,reason:values.get('reason')});
+        document.querySelector('#referrerDialog').close();await loadDashboard();await listResource('referrers')
+      }catch(error){setStatus(error.message,true)}
+    }
+    function syncCommissionRequirements(){
+      const form=document.querySelector('#commissionDialog form');const action=form.elements.action.value;
+      for(const name of ['approvalReference','payoutReference','voidReason'])form.elements[name].required=false;
+      form.elements[{approve:'approvalReference',pay:'payoutReference',void:'voidReason'}[action]].required=true;
+      form.querySelectorAll('[data-for]').forEach(label=>label.hidden=label.dataset.for!==action)
+    }
+    document.querySelector('#commissionDialog [name="action"]').addEventListener('change',syncCommissionRequirements);
+    function editCommission(id){
+      const record=state.commissions.get(id)||state.subscriptions.get(id);if(!record)return;const form=document.querySelector('#commissionDialog form');form.reset();form.elements.subscriptionId.value=record.id;form.elements.action.value=record.commissionState==='approved'?'pay':'approve';document.querySelector('#commissionEvidence').textContent=`${record.referrerName||record.referrerCode}｜配置 ${money(record.allocatedAmountTwd)}｜分潤 ${money(record.commissionAccruedAmountTwd)}｜${record.commissionState}\n協議：${record.referralSnapshot?.agreementReference||'無'}\n核准證據：${record.commissionApproval?.reference||'無'}｜付款證據：${record.commissionPayment?.reference||'無'}`;syncCommissionRequirements();document.querySelector('#commissionDialog').showModal()
+    }
+    async function saveCommission(event){
+      event.preventDefault();const values=new FormData(event.currentTarget);
+      try{await rpc('adminPatchCommission',{subscriptionId:values.get('subscriptionId'),action:values.get('action'),approvalReference:values.get('approvalReference')||undefined,payoutReference:values.get('payoutReference')||undefined,voidReason:values.get('voidReason')||undefined,reason:values.get('reason')});document.querySelector('#commissionDialog').close();await loadDashboard();await listResource('commissions')}catch(error){setStatus(error.message,true)}
+    }
     async function exportResource(resource){try{const data=await rpc('adminExport',{resource,reason:'雪芬姐後台手動匯出'});const url=URL.createObjectURL(new Blob([data.csv],{type:data.mimeType}));const anchor=Object.assign(document.createElement('a'),{href:url,download:data.filename});anchor.click();URL.revokeObjectURL(url)}catch(error){setStatus(error.message,true)}}
     bootstrap();
   </script>

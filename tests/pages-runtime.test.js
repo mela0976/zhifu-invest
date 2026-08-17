@@ -175,6 +175,8 @@ test('Pages build injects runtime config before every module and rewrites API li
 
   const admin = await readFile(join(directory, 'admin.html'), 'utf8');
   assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/subscriptions\.csv"/);
+  assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/referrers\.csv"/);
+  assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/commissions\.csv"/);
   assert.doesNotMatch(admin, /href="\/zhifu-invest\/api\//);
 
   const index = await readFile(join(directory, 'index.html'), 'utf8');

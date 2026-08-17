@@ -2,7 +2,7 @@
 
 function seedDemoData() {
   return withStoreLock_(function () {
-    ['Members', 'Projects', 'Subscriptions', 'Bookings', 'Activations', 'Notifications', 'Audits']
+    ['Members', 'Projects', 'Subscriptions', 'Referrers', 'Bookings', 'Activations', 'Notifications', 'Audits']
       .forEach(function (sheetName) {
         if (storeList_(sheetName).length) {
           throw domainError_('Demo seed refused because ' + sheetName + ' already contains data', 'seed_requires_empty_workbook', 409);
@@ -10,6 +10,22 @@ function seedDemoData() {
       });
     var industries = ['生技醫療', '半導體', '系統整合', '智慧製造', '綠色科技', '數位健康'];
     var now = nowIso_();
+    var referrers = Array.from({ length: 4 }, function (_, index) {
+      return createReferrerRecord_({
+        demo: true,
+        code: 'DEMO-GROUP-' + (index + 1),
+        displayName: 'DEMO｜社群 ' + (index + 1),
+        legalName: 'DEMO｜示意引薦法人 ' + (index + 1),
+        contactName: 'DEMO｜引薦窗口 ' + (index + 1),
+        contactEmail: 'referrer' + (index + 1) + '@example.invalid',
+        status: 'active',
+        defaultCommissionRateBps: 250 + index * 50,
+        commissionBasis: 'allocated_amount',
+        agreementReference: 'DEMO-AGREEMENT-' + String(index + 1).padStart(3, '0'),
+        effectiveAt: now,
+        expiresAt: '2028-01-01T00:00:00.000Z'
+      }, 'referrer-' + String(index + 1).padStart(2, '0'), now);
+    });
     var projects = industries.map(function (industry, index) {
       var number = index + 1;
       var id = 'project-' + String(number).padStart(2, '0');
@@ -48,13 +64,14 @@ function seedDemoData() {
       var id = 'member-' + String(number).padStart(3, '0');
       var membershipState = number <= 24 ? 'active' : number <= 28 ? 'pending' : 'rejected';
       var qualificationState = number <= 18 ? 'approved' : number <= 23 ? 'reviewing' : 'not_applied';
+      var referrer = referrers[index % referrers.length];
       return {
         id: id, demo: true, displayName: 'DEMO｜示意會員 ' + String(number).padStart(2, '0'),
         legalName: 'DEMO｜測試姓名 ' + String(number).padStart(2, '0'),
         phone: '09' + String(10000000 + number), email: 'demo' + number + '@example.invalid',
         lineUserId: 'demo-line-user-' + String(number).padStart(3, '0'),
         lineFriendshipState: number % 5 === 0 ? 'unknown' : 'friend',
-        sourceGroup: 'DEMO｜社群 ' + ((index % 4) + 1), membershipState: membershipState,
+        sourceGroup: referrer.displayName, membershipState: membershipState,
         qualificationState: qualificationState,
         qualificationApproval: qualificationState === 'approved' ? {
           approver: 'DEMO｜持牌合作機構', approvedAt: now,
@@ -65,9 +82,15 @@ function seedDemoData() {
           'project-' + String((index % 6) + 1).padStart(2, '0'),
           'project-' + String(((index + 1) % 6) + 1).padStart(2, '0')
         ],
+        referralAttribution: {
+          referrerId: referrer.id, referralCode: referrer.code, state: 'verified',
+          evidenceReference: 'DEMO-R-' + String(number).padStart(4, '0'),
+          claimedAt: now, verifiedBy: 'DEMO｜admin', verifiedAt: now
+        },
         createdAt: now, updatedAt: now
       };
     });
+    referrers.forEach(function (referrer) { storeAppend_('Referrers', referrer); });
     projects.forEach(function (project, index) {
       project.memberAllowlist = members.filter(function (member, memberIndex) {
         return memberIndex < 18 && memberIndex % 6 === index;
@@ -97,15 +120,28 @@ function seedDemoData() {
         },
         createdAt: now, updatedAt: now
       };
+      initializeCommissionFields_(
+        subscription,
+        referralSnapshotForMember_(member, referrers, now),
+        now
+      );
       validateAmounts_(subscription);
+      subscription.commissionBasisAmountTwd = subscription.allocatedAmountTwd;
+      subscription.commissionAccruedAmountTwd = calculateCommissionAmount_(
+        subscription.allocatedAmountTwd,
+        subscription.referralSnapshot.commissionRateBps
+      );
+      if (subscription.allocationState === 'final' && subscription.allocatedAmountTwd > 0) {
+        subscription.commissionState = 'accrued';
+      }
       storeAppend_('Subscriptions', subscription);
     });
     appendAudit_({
       entityType: 'system', entityId: 'demo-seed', action: 'seed.demo_initialized',
       actor: { type: 'admin', id: Session.getEffectiveUser().getEmail() || 'setup-user' },
-      before: null, after: { demo: true, projects: 6, members: 30, subscriptions: 25 },
+      before: null, after: { demo: true, projects: 6, members: 30, subscriptions: 25, referrers: 4 },
       reason: 'Explicitly initialize clearly labelled Demo records'
     });
-    return { demo: true, projects: 6, members: 30, subscriptions: 25 };
+    return { demo: true, projects: 6, members: 30, subscriptions: 25, referrers: 4 };
   });
 }

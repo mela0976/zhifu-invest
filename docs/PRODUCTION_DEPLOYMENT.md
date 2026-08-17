@@ -84,7 +84,14 @@ Cloudflare 建議新 Worker 使用目前 compatibility date、生成 binding typ
 5. 雪芬姐與備援管理員先通過 Google `ADMIN_EMAILS`，再輸入自有 TOTP；8 小時後台 session 的原始 token 只在該分頁的 `sessionStorage`，伺服器只存雜湊與期限。Google 帳號本身也必須開啟兩步驟驗證。
 6. 執行 `productionPreflight()`，確認兩名管理員、每人 TOTP、gateway secret 與 spreadsheet 設定均存在；安裝唯一一個 `processNotificationQueue` 5 分鐘 trigger。
 7. GitHub Pages 的 `admin.html` 僅供本機 Demo；正式雪芬姐儀表板由 Worker 的 `ADMIN_DASHBOARD_URL` 導向 Admin Apps Script `/exec`。
-8. production 不執行 `seedDemoData()`；完整 deployment 操作與 manifest 切換方式見 `apps-script/README.md`。
+8. 執行 `migrateReferralCommissionSchema()`，建立 Referrers sheet 及會員／認購的歸因與分潤欄位；舊認購不得推測或回填歷史引薦證據。
+9. production 不執行 `seedDemoData()`；完整 deployment 操作與 manifest 切換方式見 `apps-script/README.md`。
+
+### 正式引薦方上線資料
+
+每位合作方在開放來源碼前，必須由 operations 建立：唯一 code、顯示名稱、簽約法定名稱、聯絡人／信箱、合作狀態、整數 basis points、`allocated_amount` 計算基礎、協議參考編號、生效與到期時間。來源碼只建立 claimed；會員歸因需管理員附引薦證據後才成為 verified。
+
+認購送出時會複製不可變的 referrer／費率／協議快照。只有 final allocation 會進入 accrued；approve、pay、void 各自要求原因及證據，paid 不可逆。這是營運台帳，不等同法律上的報酬請求權；正式契約、適法性、稅務與付款由營運法律主體、持牌合作方及專業顧問確認。
 
 Apps Script `doPost(e)` 只提供 request body 等 event fields，沒有可依賴的自訂 request header，因此 Worker 簽章放在 JSON body；所有 Sheet 寫入使用同一 project 的 `LockService.getScriptLock()`，並在釋放前 `SpreadsheetApp.flush()`。[Apps Script Web Apps](https://developers.google.com/apps-script/guides/web)、[deployment entry point](https://developers.google.com/apps-script/api/reference/rest/v1/projects.deployments)、[LockService](https://developers.google.com/apps-script/reference/lock/lock-service)
 
@@ -118,6 +125,7 @@ Pages build 只把這個公開 API origin 寫入 `runtime-config.js`。沒有設
 - 兩位管理員：Google allowlist、各自 TOTP、錯誤鎖定、登出與 8 小時到期；任何一人不得共用另一人的 TOTP。
 - 合格投資人＋逐案 allowlist：未通過任一層不得取得保護 payload 或 R2 key。
 - 認購：申請、營運確認、合作方核准、入金、分配、退款五組狀態／金額與 audit。
+- 引薦與分潤：至少兩位引薦方、有效／未知／過期 code、claimed／verified、改派只影響未來認購、快照不回寫、final allocation 計提、核准／付款／作廢證據、paid 不可逆、會員端無分潤欄位。
 - LINE：例行通知自動送達；拒絕、退款、bulk 人工確認；失敗重試 3 次後進待辦。
 - Pitch Deck：5 分鐘到期、同 session、個人化／稽核；LINE in-app browser 使用 inline／另開瀏覽器，不依賴 `download` attribute。
 - 關閉帳戶：非必要資料刪除或去識別，法定認購與稽核紀錄封存。

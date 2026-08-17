@@ -55,13 +55,18 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | `POST /api/subscriptions` | `createSubscription` | Member/Admin |
 | `GET /api/admin/dashboard`, `/overview`, `/actions` | `adminDashboard` | Admin |
 | `GET /api/admin/{members,projects,subscriptions,notifications,audits}` | `adminList` | Admin |
+| `GET /api/admin/referrers` | `adminList(resource=referrers)` | Admin |
+| `POST /api/admin/referrers` | `adminCreateReferrer` | Admin |
+| `PATCH /api/admin/referrers/:referrerId` | `adminPatchReferrer` | Admin |
+| `GET /api/admin/commissions` | `adminList(resource=commissions)` | Admin |
+| `PATCH /api/admin/commissions/:subscriptionId` | `adminPatchCommission` | Admin |
 | `PATCH /api/admin/members/:memberId` | `adminPatchMember` | Admin |
 | `PATCH /api/admin/projects/:projectId` | `adminPatchProject` | Admin |
 | `PATCH /api/admin/subscriptions/:subscriptionId` | `adminPatchSubscription` | Admin |
 | `POST /api/admin/notifications` | `adminCreateBulkNotification` | Admin |
 | `POST /api/admin/notifications/:notificationId/send` | `adminApproveNotification` | Admin |
 | `POST /api/admin/notifications/process` | `adminProcessNotifications` | Admin |
-| `GET /api/admin/export[s]/{members,subscriptions}.csv` | `adminExport` | Admin |
+| `GET /api/admin/export[s]/{members,subscriptions,referrers,commissions}.csv` | `adminExport` | Admin |
 | LINE callback member mapping | `upsertLineMember` | Worker internal/service |
 | `POST /api/auth/admin` Google + 2FA | `authenticateAdmin` | Worker internal/service |
 | Deck permission check | `authorizeDeck` | Worker internal, authenticated |
@@ -69,6 +74,28 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | Verified LINE webhook | `webhookEvent`，成功後才標記 delivered | Worker internal/service |
 
 每個 `payloadJson` 都含 Worker 產生的 `context`（role、actorId、memberId、requestId），再依 operation 加入明確欄位。Apps Script 不得相信瀏覽器自行提供的會員或角色欄位。
+
+分潤 mutation 的 canonical HTTP body 固定為：
+
+```json
+{
+  "action": "approve | pay | void",
+  "approvalReference": "approve 時必填",
+  "payoutReference": "pay 時必填",
+  "voidReason": "void 時必填",
+  "reason": "每個動作必填"
+}
+```
+
+Worker 只把上述欄位與 path 的 `subscriptionId` 送入 `adminPatchCommission`。所有 member access
+route 以及 `/api/auth/me` 在回應前會再移除 `commission*`、`referralSnapshot*`、
+`referralAttribution*`、`evidenceReference`、`referrerName`；只有 admin route 保留完整資料。
+
+引薦方 POST／PATCH 採 canonical 欄位：`code,displayName,legalName,contactName,contactEmail,status,
+defaultCommissionRateBps,commissionBasis,agreementReference,effectiveAt,expiresAt`，並把 `reason` 放在
+同一 HTTP body。會員歸因 PATCH 使用 `referralAttribution:{referrerId,evidenceReference}`；Worker
+會原樣放入 Apps Script 的 `patch.referralAttribution`，不接受其他歷史欄位名稱。
+管理員 dashboard 回應保留 `overview,kpis,referrers,members,subscriptions,commissions,actions`。
 
 ## LINE Login 與 webhook
 

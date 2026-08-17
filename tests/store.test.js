@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -19,6 +19,39 @@ test('concurrent mutations are serialized without losing either update', async (
     const persisted = JSON.parse(await readFile(filePath, 'utf8'));
     assert.equal(persisted.activations.length, 20);
     assert.equal(new Set(persisted.activations.map((item) => item.id)).size, 20);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy data migration never fabricates historical referral or commission evidence', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zhifu-store-migration-'));
+  const filePath = join(directory, 'data.json');
+  try {
+    const seeded = await new JsonStore(filePath).init();
+    const legacy = seeded.snapshot();
+    legacy.meta.schemaVersion = 1;
+    delete legacy.referrers;
+    for (const member of legacy.members) delete member.referralAttribution;
+    for (const subscription of legacy.subscriptions) {
+      for (const field of [
+        'referralSnapshot', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd',
+        'commissionApproval', 'commissionPayment', 'commissionVoidReason',
+      ]) delete subscription[field];
+    }
+    legacy.subscriptions[0].allocatedAmountTwd = 123_456;
+    await writeFile(filePath, JSON.stringify(legacy), { mode: 0o600 });
+
+    const migrated = await new JsonStore(filePath).init();
+    assert.equal(migrated.data.meta.schemaVersion, 2);
+    assert.equal(migrated.data.referrers.length, 4);
+    assert.ok(migrated.data.members.every((item) => item.referralAttribution === null));
+    assert.ok(migrated.data.subscriptions.every((item) => (
+      item.referralSnapshot === null
+      && item.commissionState === 'not_applicable'
+      && item.commissionBasisAmountTwd === 0
+      && item.commissionAccruedAmountTwd === 0
+    )));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
