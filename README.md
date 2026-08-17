@@ -91,4 +91,4 @@ The Docker build runs these boundaries in one Node process for local acceptance.
 
 ## Confirmed scope
 
-See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements. The credential setup, deployment order, and live acceptance checklist are in [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). Implemented, locally verified, and still-external items are separated in [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).
+See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements. The credential setup, deployment order, and live acceptance checklist are in [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). If a LINE secret or token may have been disclosed, follow [docs/LINE_CREDENTIAL_ROTATION.md](docs/LINE_CREDENTIAL_ROTATION.md) before deployment. Implemented, locally verified, and still-external items are separated in [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).
