@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#081a2c">
+  <meta name="description" content="使用 LINE 登入、加入致富投資官方帳號，送出既有會員啟用申請。">
+  <title>啟用會員｜致富投資</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body class="activation-page">
+  <a class="skip-link" href="#activation-main">跳至啟用表單</a>
+  <div class="demo-strip">LOCAL DEMO｜正式 LINE Channel 設定前，登入步驟由 Demo 身分取代</div>
+  <main class="activation-shell" id="activation-main">
+    <aside class="activation-aside">
+      <a class="brand" href="/" aria-label="回到致富投資首頁"><span class="brand__seal" aria-hidden="true">致</span><span class="brand__text"><span class="brand__name">致富投資</span><span class="brand__descriptor">Member activation</span></span></a>
+      <h1>把社群身分，<br>安全帶進會員中心。</h1>
+      <p>LINE 群組與 OpenChat 只用來導流，不自動視為會員。啟用申請仍由雪芬姐人工核對。</p>
+      <ol class="steps" aria-label="啟用進度">
+        <li class="is-current" data-step-label="login">LINE 登入</li>
+        <li data-step-label="friend">加入官方帳號</li>
+        <li data-step-label="identity">填寫身分與來源</li>
+        <li data-step-label="review">等待人工確認</li>
+      </ol>
+    </aside>
+    <section class="activation-main">
+      <div class="activation-card" id="activation-card">
+        <p class="eyebrow">Step 01–03</p>
+        <h2>啟用既有會員資格</h2>
+        <p class="lede" style="font-size:16px">登入、加入官方帳號，再填寫雪芬姐社群來源；三件事完成後才送出審核。</p>
+
+        <div class="line-lockup" id="line-status">
+          <span class="line-lockup__mark" aria-hidden="true">L</span>
+          <div><strong>尚未連結 LINE 身分</strong><div class="micro">正式環境將前往 LINE Login；Demo 可選擇測試會員。</div></div>
+        </div>
+
+        <div class="button-row" id="line-actions">
+          <a class="button button--line" href="/api/auth/line" id="line-login">使用 LINE 登入</a>
+          <button class="button button--secondary" type="button" data-demo-login="member" data-member-id="member-001" data-testid="demo-login-member-a">Demo 會員登入</button>
+        </div>
+
+        <form id="activation-form" style="margin-top:30px" hidden>
+          <div class="form-grid">
+            <div class="field field--full"><label for="activation-name">真實姓名</label><input class="input" id="activation-name" name="fullName" autocomplete="name" required><p class="field__hint">僅供人工核對，不會顯示於公開頁。</p></div>
+            <div class="field"><label for="activation-phone">手機號碼</label><input class="input" id="activation-phone" name="phone" inputmode="tel" autocomplete="tel" pattern="09[0-9]{8}" placeholder="0912345678" required></div>
+            <div class="field"><label for="activation-code">社群來源碼</label><input class="input mono" id="activation-code" name="sourceCode" autocomplete="off" minlength="4" placeholder="例如 SF-NORTH" required></div>
+            <div class="field field--full"><label for="activation-source">你加入的群組／OpenChat</label><input class="input" id="activation-source" name="sourceName" placeholder="例如：北區投資班" required></div>
+            <div class="field field--full">
+              <a class="button button--line button--wide" href="#" target="_blank" rel="noopener" id="add-friend" data-testid="line-add-friend">加入致富投資 LINE 官方帳號</a>
+              <label class="checkbox"><input type="checkbox" name="lineFriendConfirmed" value="true" required><span>我已加入官方帳號，並了解封鎖官方帳號後將無法收到狀態通知。</span></label>
+            </div>
+            <div class="field field--full"><label class="checkbox"><input type="checkbox" name="privacyConsent" value="true" required><span>我已閱讀並同意<a href="/privacy.html" target="_blank">隱私權政策草案</a>及必要的 LINE 交易通知。</span></label></div>
+            <input type="hidden" name="lineUserId" id="line-user-id">
+            <div class="field field--full"><button class="button button--wide" type="submit">送出會員啟用申請</button></div>
+          </div>
+        </form>
+        <p class="micro" style="margin-top:24px">防詐提醒：我們不會在此流程要求匯款、信用卡或銀行密碼。若收到可疑訊息，請停止操作。</p>
+      </div>
+    </section>
+  </main>
+  <div class="sr-only" id="live-region" aria-live="polite"></div>
+  <script type="module" src="/js/activate.js"></script>
+</body>
+</html>

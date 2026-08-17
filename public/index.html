@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#081a2c">
+  <meta name="description" content="致富投資——以清楚權限、專家審閱與可追溯流程，連結產業研究、顧問諮詢與會員服務。">
+  <title>致富投資｜研究先行，決策有據</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳至主要內容</a>
+  <div class="demo-strip">LOCAL DEMO｜所有人物、企業與金額均為示意，不構成投資建議</div>
+  <header class="site-header">
+    <div class="header__inner">
+      <a class="brand" href="/" aria-label="致富投資首頁">
+        <span class="brand__seal" aria-hidden="true">致</span>
+        <span class="brand__text"><span class="brand__name">致富投資</span><span class="brand__descriptor">Private market research ledger</span></span>
+      </a>
+      <button class="menu-toggle" type="button" aria-label="開啟選單" aria-controls="site-navigation" aria-expanded="false" data-menu-toggle><span></span></button>
+      <nav class="header__nav" id="site-navigation" aria-label="主要導覽" data-mobile-menu>
+        <a href="#projects" data-scroll-to>募資研究</a>
+        <a href="#insights" data-scroll-to>產業內容</a>
+        <a href="#advisory" data-scroll-to>顧問預約</a>
+        <a href="/activate.html" class="button button--small button--line" data-testid="line-add-friend">用 LINE 啟用會員</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero__inner">
+        <div class="hero__copy">
+          <p class="eyebrow">致富投資｜研究檔案 2026</p>
+          <h1 id="hero-title">看懂產業，<br><span>再做決定。</span></h1>
+          <p class="lede">從一般市場教育、專家審閱到會員專屬資料室，讓每一次諮詢與認購意向都有清楚脈絡、權限與紀錄。</p>
+          <div class="button-row">
+            <a class="button button--line" href="/activate.html" data-testid="line-add-friend">從 LINE 啟用會員</a>
+            <a class="button button--paper" href="#projects" data-scroll-to>先看產業摘要</a>
+          </div>
+          <p class="micro" style="margin-top:18px;color:#9aa8b1">本平台不處理證券交易、契約簽署或金流；資格與認購接受由合作機構於站外審核。</p>
+        </div>
+        <aside class="hero__folio" aria-label="平台作業原則">
+          <div class="folio__index">File no. ZF / 2026 / 001</div>
+          <div class="folio__body">
+            <div class="folio__stamp" aria-hidden="true">研究先行</div>
+            <ul class="folio__list">
+              <li><span>內容</span><strong>專家審閱</strong></li>
+              <li><span>身分</span><strong>LINE 驗證</strong></li>
+              <li><span>權限</span><strong>逐案授權</strong></li>
+              <li><span>紀錄</span><strong>全程留痕</strong></li>
+            </ul>
+          </div>
+          <div class="folio__footer">Taiwan / Traditional Chinese / TWD</div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section section--compact section--paper" aria-label="平台信任原則">
+      <div class="container">
+        <div class="trust-ledger">
+          <article class="trust-ledger__item"><span class="trust-ledger__number">01 / VERIFY</span><h3>會員人工確認</h3><p>LINE 登入不等於通過，仍由雪芬姐核對來源。</p></article>
+          <article class="trust-ledger__item"><span class="trust-ledger__number">02 / REVIEW</span><h3>專家與 AI 分軌</h3><p>AI 報告標示版本，正式發布前需經專家審閱。</p></article>
+          <article class="trust-ledger__item"><span class="trust-ledger__number">03 / PERMIT</span><h3>資料逐案解鎖</h3><p>資格通過後，仍只開放獲准瀏覽的特定專案。</p></article>
+          <article class="trust-ledger__item"><span class="trust-ledger__number">04 / TRACE</span><h3>異動可追溯</h3><p>認購、入金與分配分開記錄，不覆蓋歷程。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="projects" aria-labelledby="projects-title">
+      <div class="container">
+        <div class="section-heading">
+          <div><p class="eyebrow">Project register</p><h2 id="projects-title">募資研究，不從口號開始</h2></div>
+          <p class="section-heading__note">公開頁僅顯示匿名產業摘要。公司、條件、財務與報告須完成會員確認及逐案授權後查看。</p>
+        </div>
+        <div class="notice" id="project-source" hidden></div>
+        <div class="filter-row" id="project-filters" aria-label="依產業篩選">
+          <button class="filter-chip" type="button" aria-pressed="true" data-filter="all">全部研究</button>
+        </div>
+        <div class="project-grid" id="project-grid" aria-live="polite">
+          <div class="loading-state" style="grid-column:1/-1"><div><p>正在整理研究索引</p><div class="loading-line"></div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section--navy" id="insights" aria-labelledby="insights-title">
+      <div class="container">
+        <div class="section-heading">
+          <div><p class="eyebrow">Field notes</p><h2 id="insights-title">把短影音變成研究入口</h2></div>
+          <p class="section-heading__note" style="color:#aebac2">影片由外部工具製作，平台保存來源、分類與發布狀態；以下均為示意內容。</p>
+        </div>
+        <div class="video-grid">
+          <article class="video-card"><span class="video-card__type">產業拆解 · 03:40</span><h3>先看市場，不急著看標的：生技授權的三個判讀節點</h3></article>
+          <article class="video-card"><span class="video-card__type">研究方法 · 02:15</span><h3>AI 報告怎麼讀，才不會把推論當事實？</h3></article>
+          <article class="video-card"><span class="video-card__type">流程說明 · 01:50</span><h3>從會員啟用到認購意向，資料如何被確認</h3></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section--ruled" aria-labelledby="experts-title">
+      <div class="container">
+        <div class="section-heading">
+          <div><p class="eyebrow">Review desk</p><h2 id="experts-title">雙軌報告，責任不混在一起</h2></div>
+        </div>
+        <div class="expert-grid">
+          <article class="expert-card"><span class="expert-card__marker">AI</span><h3>結構化擴充</h3><p>整理公開資料、問題清單與情境推演；標示模型、資料基準日及版本。</p></article>
+          <article class="expert-card"><span class="expert-card__marker">專</span><h3>領域專家審閱</h3><p>生技、半導體與系統領域採不同審閱框架；正式人選待授權後公告。</p></article>
+          <article class="expert-card"><span class="expert-card__marker">核</span><h3>發布前留證</h3><p>涉及募資條件與投顧內容，須登錄合作方核准人、日期與參考編號。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="fraud-title">
+      <div class="container">
+        <div class="anti-fraud">
+          <div class="anti-fraud__title"><p class="eyebrow">Anti-fraud protocol</p><h2 id="fraud-title">三件事，先幫你辨識真偽</h2><p>致富投資不會在 LINE 訊息內要求轉帳，也不會承諾獲利。</p></div>
+          <div class="anti-fraud__body">
+            <ol>
+              <li><strong>只從官方入口登入</strong><br><span class="micro">核對網址及 LINE 官方帳號名稱，不透過陌生短網址輸入資料。</span></li>
+              <li><strong>金額只在登入後查看</strong><br><span class="micro">LINE 通知只提示狀態更新，不顯示認購、入金或分配金額。</span></li>
+              <li><strong>契約與匯款皆在站外確認</strong><br><span class="micro">平台只記錄流程結果；遇到可疑要求，請停止操作並聯絡官方窗口。</span></li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section--paper" id="advisory" aria-labelledby="booking-title">
+      <div class="container container--narrow">
+        <div class="section-heading">
+          <div><p class="eyebrow">Advisory booking</p><h2 id="booking-title">先說你想釐清的問題</h2></div>
+        </div>
+        <form class="form-card" id="booking-form">
+          <div class="form-grid">
+            <div class="field"><label for="booking-role">你的身分</label><select class="select" id="booking-role" name="role" required><option value="">請選擇</option><option value="investor">投資會員</option><option value="company">募資企業</option><option value="other">其他合作</option></select></div>
+            <div class="field"><label for="booking-topic">諮詢類型</label><select class="select" id="booking-topic" name="topic" required><option value="">請選擇</option><option>會員與投資流程</option><option>生技市場研究</option><option>半導體／系統策略</option><option>企業募資顧問</option></select></div>
+            <div class="field"><label for="booking-name">稱呼</label><input class="input" id="booking-name" name="name" autocomplete="name" required></div>
+            <div class="field"><label for="booking-phone">聯絡電話</label><input class="input" id="booking-phone" name="phone" inputmode="tel" autocomplete="tel" required></div>
+            <div class="field"><label for="booking-date">偏好日期</label><input class="input" id="booking-date" name="preferredDate" type="date" required></div>
+            <div class="field"><label for="booking-time">偏好時段</label><select class="select" id="booking-time" name="preferredTime" required><option value="">請選擇</option><option>09:00–12:00</option><option>13:00–17:00</option><option>18:00–20:00</option></select></div>
+            <div class="field field--full"><label for="booking-note">想先討論的事</label><textarea class="textarea" id="booking-note" name="note" maxlength="500" placeholder="請簡短說明目前情況與希望釐清的問題"></textarea></div>
+            <div class="field field--full"><label class="checkbox"><input name="consent" type="checkbox" required><span>我同意依<a href="/privacy.html">隱私權政策草案</a>蒐集必要聯絡資料，並了解送出後由雪芬姐人工確認正式時間。</span></label></div>
+            <div class="field field--full"><button class="button" type="submit">送出預約需求</button></div>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer__grid">
+      <div><div class="footer__brand">致富投資</div><p>研究先行、權限清楚、流程留痕的會員服務平台。</p></div>
+      <div><h3>法律與安全</h3><nav class="footer__links"><a href="/risk.html">投資風險與防詐聲明</a><a href="/privacy.html">隱私權政策草案</a><a href="/terms.html">會員服務條款草案</a></nav></div>
+      <div><h3>Demo access</h3><div class="footer__links"><button class="button button--small button--paper" type="button" data-demo-login="member" data-member-id="member-001" data-testid="demo-login-member-a">Demo 會員 A</button><button class="button button--small button--paper" type="button" data-demo-login="member" data-member-id="member-002" data-testid="demo-login-member-b">Demo 會員 B</button><button class="button button--small button--paper" type="button" data-demo-login="admin" data-testid="demo-login-admin">雪芬姐 Demo 後台</button></div></div>
+    </div>
+    <div class="container footer__legal">平台品牌：致富投資｜平台營運、持牌投顧及資格審核主體：正式發布前確認｜技術與諮詢支持：奇華智能投資顧問股份有限公司（名稱待核）</div>
+  </footer>
+
+  <dialog id="project-dialog" aria-labelledby="project-dialog-title">
+    <div class="dialog__head"><div><p class="eyebrow">Project brief</p><h2 id="project-dialog-title">專案摘要</h2></div><button class="dialog__close" type="button" aria-label="關閉" data-dialog-close>×</button></div>
+    <div class="dialog__body" id="project-dialog-body"></div>
+    <div class="dialog__foot"><button class="button button--secondary" type="button" data-dialog-close>稍後再看</button><a class="button button--line" href="/activate.html">用 LINE 啟用會員</a></div>
+  </dialog>
+  <div class="sr-only" id="live-region" aria-live="polite"></div>
+  <script type="module" src="/js/index.js"></script>
+</body>
+</html>

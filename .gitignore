@@ -1,0 +1,9 @@
+node_modules/
+runtime/*
+!runtime/.gitkeep
+playwright-report/
+test-results/
+dist-pages/
+.env
+.DS_Store
+*.log

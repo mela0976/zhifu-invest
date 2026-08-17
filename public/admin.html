@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#081a2c">
+  <meta name="description" content="雪芬姐營運儀表板：會員確認、資格、認購、入金、分配、LINE 通知與稽核管理。">
+  <title>雪芬姐營運儀表板｜致富投資</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body class="admin-body">
+  <a class="skip-link" href="#admin-main">跳至營運資料</a>
+  <div class="demo-strip">LOCAL DEMO｜30 位示意會員、25 筆示意認購；無真實個資</div>
+  <div class="admin-shell">
+    <aside class="admin-sidebar">
+      <a class="brand" href="/"><span class="brand__seal" aria-hidden="true">致</span><span class="brand__text"><span class="brand__name">營運台</span><span class="brand__descriptor">Operations ledger</span></span></a>
+      <nav class="admin-nav" aria-label="營運模組">
+        <a href="#overview" data-admin-nav="overview" aria-current="page"><span class="admin-nav__number">01</span>營運總覽</a>
+        <a href="#members" data-admin-nav="members"><span class="admin-nav__number">02</span>會員與資格</a>
+        <a href="#subscriptions" data-admin-nav="subscriptions" data-testid="admin-subscriptions"><span class="admin-nav__number">03</span>認購管理</a>
+        <a href="#projects" data-admin-nav="projects"><span class="admin-nav__number">04</span>募資專案</a>
+        <a href="#content" data-admin-nav="content"><span class="admin-nav__number">05</span>內容與報告</a>
+        <a href="#notifications" data-admin-nav="notifications"><span class="admin-nav__number">06</span>LINE 通知</a>
+        <a href="#audit" data-admin-nav="audit"><span class="admin-nav__number">07</span>匯出與稽核</a>
+      </nav>
+      <div class="admin-sidebar__foot"><p class="micro" style="color:#7f909c">正式後台使用 Google 帳號白名單與兩步驟驗證；Demo 使用本機 Session。</p><button class="button button--paper button--small button--wide" type="button" data-logout>登出後台</button></div>
+    </aside>
+
+    <div class="admin-main">
+      <header class="admin-topbar"><div class="admin-topbar__title"><small>Zhifu / Operations</small><strong>雪芬姐營運儀表板</strong></div><div class="identity-chip"><span class="identity-chip__mark" aria-hidden="true">雪</span><span class="identity-chip__text"><strong>雪芬姐</strong><small>營運管理員 · Demo</small></span></div></header>
+      <main class="admin-content" id="admin-main" data-testid="admin-dashboard">
+        <div class="notice" id="admin-source" hidden></div>
+
+        <section data-admin-view="overview" aria-labelledby="overview-title">
+          <div class="admin-heading"><div><p class="eyebrow">Daily register / 2026.08.18</p><h1 id="overview-title">營運儀表板</h1><p>先處理需要人的判斷，再看整體金額。</p></div><a class="button button--secondary button--small" href="/api/admin/export/subscriptions.csv" download>匯出今日認購</a></div>
+          <div class="kpi-grid" id="kpi-grid" data-testid="admin-kpi" aria-label="營運關鍵指標"><div class="loading-state" style="grid-column:1/-1"><div class="loading-line"></div></div></div>
+          <div class="admin-grid">
+            <section class="panel" aria-labelledby="action-queue-title" data-testid="admin-action-queue"><div class="panel__head"><h2 id="action-queue-title">今日行動佇列</h2><span class="status status--warning">依優先順序</span></div><div class="panel__body"><ul class="action-list" id="action-list"><li class="loading-state"><div class="loading-line"></div></li></ul></div></section>
+            <section class="panel"><div class="panel__head"><h2>募資案進度</h2><button class="button button--quiet button--small" type="button" data-admin-go="projects">管理專案</button></div><div class="panel__body" id="project-progress"><div class="loading-line"></div></div></section>
+          </div>
+          <section class="panel" style="margin-top:18px"><div class="panel__head"><h2>最新認購異動</h2><button class="button button--quiet button--small" type="button" data-admin-go="subscriptions">開啟認購管理</button></div><div id="overview-subscriptions"></div></section>
+        </section>
+
+        <section data-admin-view="members" aria-labelledby="members-title" hidden>
+          <div class="admin-heading"><div><p class="eyebrow">Member operations</p><h1 id="members-title">會員與資格</h1><p>會員確認與投資資格是兩條獨立流程。</p></div><a class="button button--secondary button--small" href="/api/admin/export/members.csv" download>匯出會員 CSV</a></div>
+          <section class="panel"><div class="toolbar"><label class="sr-only" for="member-search">搜尋會員</label><input class="input" id="member-search" type="search" placeholder="搜尋姓名、會員編號或來源"><label class="sr-only" for="member-filter">會員狀態</label><select class="select" id="member-filter"><option value="all">全部狀態</option><option value="pending">待確認</option><option value="active">正式會員</option><option value="disabled">已停用</option></select></div><div id="member-table"></div></section>
+        </section>
+
+        <section data-admin-view="subscriptions" aria-labelledby="subscriptions-title" hidden>
+          <div class="admin-heading"><div><p class="eyebrow">Subscription operations</p><h1 id="subscriptions-title">認購管理</h1><p>申請、核准、入金、分配與退款金額分開登錄。</p></div><a class="button button--secondary button--small" href="/api/admin/export/subscriptions.csv" download>匯出認購 CSV</a></div>
+          <section class="panel"><div class="toolbar"><label class="sr-only" for="subscription-search">搜尋認購</label><input class="input" id="subscription-search" type="search" placeholder="搜尋會員、案號或專案"><label class="sr-only" for="subscription-filter">認購狀態</label><select class="select" id="subscription-filter"><option value="all">全部狀態</option><option value="submitted">已送出</option><option value="operations_confirmed">營運已確認</option><option value="partner_review">合作方審閱</option><option value="approved">已核准</option></select></div><div id="subscription-table"></div></section>
+        </section>
+
+        <section data-admin-view="projects" aria-labelledby="projects-admin-title" hidden>
+          <div class="admin-heading"><div><p class="eyebrow">Project registry</p><h1 id="projects-admin-title">募資專案</h1><p>公開程度與會員白名單逐案設定。</p></div><button class="button button--small" type="button" data-placeholder-action="建立專案">建立專案草稿</button></div>
+          <div class="project-grid" id="admin-project-grid"></div>
+        </section>
+
+        <section data-admin-view="content" aria-labelledby="content-title" hidden>
+          <div class="admin-heading"><div><p class="eyebrow">Review desk</p><h1 id="content-title">內容與報告</h1><p>AI 與專家報告分軌保存，受監管內容需登錄站外核准證據。</p></div><button class="button button--small" type="button" data-placeholder-action="新增內容">新增草稿</button></div>
+          <div class="expert-grid"><article class="expert-card"><span class="expert-card__marker">06</span><h3>AI 報告草稿</h3><p>3 份待專家審閱，2 份已完成版本封存。</p><button class="button button--secondary button--small" type="button" data-placeholder-action="AI 報告">查看報告</button></article><article class="expert-card"><span class="expert-card__marker">04</span><h3>專家報告</h3><p>生技 2 份、半導體 1 份、系統策略 1 份。</p><button class="button button--secondary button--small" type="button" data-placeholder-action="專家報告">查看報告</button></article><article class="expert-card"><span class="expert-card__marker">09</span><h3>短影音索引</h3><p>網站僅管理外部影音網址、分類與 CTA。</p><button class="button button--secondary button--small" type="button" data-placeholder-action="短影音">查看影音</button></article></div>
+        </section>
+
+        <section data-admin-view="notifications" aria-labelledby="notifications-title" hidden>
+          <div class="admin-heading"><div><p class="eyebrow">LINE delivery register</p><h1 id="notifications-title">LINE 通知</h1><p>會員訊息不包含姓名、認購或入金金額。</p></div><button class="button button--small" type="button" id="notification-refresh">重新整理</button></div>
+          <section class="panel"><div class="panel__body" id="notification-list"><div class="loading-state"><div class="loading-line"></div></div></div></section>
+        </section>
+
+        <section data-admin-view="audit" aria-labelledby="audit-title" hidden>
+          <div class="admin-heading"><div><p class="eyebrow">Immutable audit</p><h1 id="audit-title">匯出與稽核</h1><p>錯誤資料用更正事件處理，不直接刪除歷程。</p></div></div>
+          <div class="dashboard-grid"><section class="panel"><div class="panel__head"><h2>稽核事件</h2><button class="button button--secondary button--small" type="button" id="audit-refresh">讀取最新事件</button></div><div class="panel__body" id="audit-list"><p class="micro">按「讀取最新事件」查看近期操作。</p></div></section><aside class="panel"><div class="panel__head"><h2>資料匯出</h2></div><div class="panel__body button-row"><a class="button button--secondary" href="/api/admin/export/members.csv" download>會員 CSV</a><a class="button button--secondary" href="/api/admin/export/subscriptions.csv" download>認購 CSV</a></div></aside></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <nav class="mobile-admin-bar" aria-label="手機營運導覽"><a href="#overview" data-admin-nav="overview" aria-current="page">總覽</a><a href="#members" data-admin-nav="members">會員</a><a href="#subscriptions" data-admin-nav="subscriptions" data-testid="admin-subscriptions">認購</a><a href="#notifications" data-admin-nav="notifications">通知</a><a href="#audit" data-admin-nav="audit">更多</a></nav>
+
+  <dialog id="member-dialog" aria-labelledby="member-dialog-title"><form id="member-form"><div class="dialog__head"><div><p class="eyebrow">Member operation</p><h2 id="member-dialog-title">確認會員</h2></div><button class="dialog__close" type="button" aria-label="關閉" data-dialog-close>×</button></div><div class="dialog__body"><input type="hidden" name="memberId" id="member-id"><p id="member-dialog-summary"></p><div class="field"><label for="membership-state">會員狀態</label><select class="select" id="membership-state" name="membershipState"><option value="pending">待確認</option><option value="active">正式會員</option><option value="rejected">未通過</option><option value="disabled">已停用</option></select></div><div class="field" style="margin-top:16px"><label for="member-reason">操作理由</label><textarea class="textarea" id="member-reason" name="reason" required placeholder="例如：已核對北區投資班來源碼與本人手機"></textarea></div></div><div class="dialog__foot"><button class="button button--secondary" type="button" data-dialog-close>取消</button><button class="button" type="submit">確認並儲存</button></div></form></dialog>
+
+  <dialog id="subscription-admin-dialog" aria-labelledby="subscription-admin-title"><form id="subscription-admin-form"><div class="dialog__head"><div><p class="eyebrow">Audited operation</p><h2 id="subscription-admin-title">確認認購流程</h2></div><button class="dialog__close" type="button" aria-label="關閉" data-dialog-close>×</button></div><div class="dialog__body"><input type="hidden" name="subscriptionId" id="admin-subscription-id"><div id="subscription-admin-summary"></div><div class="form-grid" style="margin-top:18px"><div class="field"><label for="admin-subscription-status">認購狀態</label><select class="select" id="admin-subscription-status" name="subscriptionStatus"><option value="submitted">已送出</option><option value="operations_confirmed">營運已確認</option><option value="partner_review">合作方審閱</option><option value="approved">已核准</option><option value="rejected">未核准</option><option value="cancelled">已取消</option></select></div><div class="field"><label for="admin-approved-amount">合作方核准金額</label><input class="input mono" id="admin-approved-amount" name="approvedAmount" type="number" min="0" step="100000"></div><div class="field"><label for="admin-received-amount">實際入金</label><input class="input mono" id="admin-received-amount" name="receivedAmount" type="number" min="0" step="100000"></div><div class="field"><label for="admin-allocated-amount">最終分配</label><input class="input mono" id="admin-allocated-amount" name="allocatedAmount" type="number" min="0" step="100000"></div><div class="field"><label for="admin-refunded-amount">退款金額</label><input class="input mono" id="admin-refunded-amount" name="refundedAmount" type="number" min="0" step="100000"></div><div class="field"><label for="admin-partner-reference">合作方核准編號</label><input class="input mono" id="admin-partner-reference" name="partnerReference" placeholder="核准時必填"></div><div class="field field--full"><label for="operation-reason">確認原因／操作理由</label><textarea class="textarea" id="operation-reason" name="reason" required data-testid="operation-reason" placeholder="此內容會寫入不可覆蓋的稽核歷程"></textarea></div></div><div class="notice" style="margin:18px 0 0">拒絕、退款及批次 LINE 通知需再次人工確認；金額不會出現在 LINE 訊息內。</div></div><div class="dialog__foot"><button class="button button--secondary" type="button" data-dialog-close>取消</button><button class="button" type="submit" data-testid="operation-confirm-submit">確認並儲存</button></div></form></dialog>
+  <div class="sr-only" id="live-region" aria-live="polite"></div>
+  <script type="module" src="/js/admin.js"></script>
+</body>
+</html>

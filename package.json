@@ -1,0 +1,26 @@
+{
+  "name": "zhifu-invest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "致富投資 mobile-first LINE member and subscription operations MVP",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "playwright test",
+    "smoke": "node scripts/smoke.js",
+    "build:pages": "node scripts/build-pages.js",
+    "reset:data": "node scripts/reset-data.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "hono": "4.13.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}
