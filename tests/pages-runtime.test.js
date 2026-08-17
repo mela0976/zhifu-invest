@@ -176,4 +176,8 @@ test('Pages build injects runtime config before every module and rewrites API li
   const admin = await readFile(join(directory, 'admin.html'), 'utf8');
   assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/subscriptions\.csv"/);
   assert.doesNotMatch(admin, /href="\/zhifu-invest\/api\//);
+
+  const index = await readFile(join(directory, 'index.html'), 'utf8');
+  assert.match(index, /power by 奇華智能投資顧問股份有限公司/);
+  assert.doesNotMatch(index, /奇華智能投資顧問股份有限公司（名稱待核）/);
 });
