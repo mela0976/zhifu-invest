@@ -35,6 +35,14 @@ LINE Login 與 Messaging API channel 必須位於同一個 LINE Provider。LINE 
 5. Webhook 必須先驗 `x-line-signature` 對原始 body 的 HMAC-SHA256，再 parse JSON。
 6. 通知只寫「狀態已更新，請登入查看」，不包含姓名、認購、入金、分配或退款金額。
 
+完成 token 與 webhook 設定後，執行唯讀預檢。命令列只放可公開的 OA Basic ID；access token 由 TTY 隱藏提示讀取，不會發送訊息或變更 LINE 設定：
+
+```bash
+LINE_MESSAGING_EXPECTED_BASIC_ID='@YOUR_BASIC_ID' npm run preflight:line
+```
+
+預檢只呼叫 LINE 的 `GET /v2/bot/info` 與 `GET /v2/bot/channel/webhook/endpoint`，並要求 token 所屬 OA、webhook URL 與啟用狀態全部符合。若 OA 不符，會在查詢 webhook 前停止；輸出不包含 token、LINE 原始錯誤 body 或 webhook query/fragment。[Get bot info and webhook endpoint](https://developers.line.biz/en/reference/messaging-api/)
+
 參考：[LINE Login web integration](https://developers.line.biz/en/docs/line-login/integrate-line-login/)、[LINE Login API](https://developers.line.biz/en/reference/line-login/)、[Webhook signature](https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/)。
 
 ## 4. Cloudflare Worker

@@ -16,6 +16,7 @@
     "build:worker": "wrangler deploy --dry-run --config cloudflare/wrangler.jsonc --outdir .wrangler/dry-run",
     "test:e2e": "playwright test",
     "smoke": "node scripts/smoke.js",
+    "preflight:line": "node scripts/line-messaging-preflight.js",
     "build:pages": "node scripts/build-pages.js",
     "reset:data": "node scripts/reset-data.js"
   },
