@@ -4,6 +4,7 @@ runtime/*
 playwright-report/
 test-results/
 dist-pages/
+.wrangler/
 .env
 .DS_Store
 *.log

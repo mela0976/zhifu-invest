@@ -20,6 +20,8 @@ test-results
 docs
 tests
 scripts
+apps-script
+cloudflare
 playwright.config.js
 Dockerfile*
 compose*.yaml

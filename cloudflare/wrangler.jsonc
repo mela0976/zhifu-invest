@@ -1,0 +1,33 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "zhifu-invest-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true },
+    "traces": { "enabled": true }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zhifu-invest-gateway",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DECKS",
+      "bucket_name": "zhifu-invest-protected-decks"
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "APP_ORIGIN": "https://mela0976.github.io",
+    "ALLOWED_ORIGINS": "https://mela0976.github.io",
+    "MEMBER_REDIRECT_URL": "https://mela0976.github.io/zhifu-invest/member.html",
+    "COOKIE_SAME_SITE": "None"
+  }
+}

@@ -161,7 +161,18 @@ async function loadDashboard() {
       closingDate: project.closingDate ?? project.protected?.deadline,
       risk: project.risk ?? project.protected?.risks?.join('；'),
     }));
-    subscriptions = normalizeList(data.subscriptions, 'subscriptions');
+    subscriptions = normalizeList(data.subscriptions, 'subscriptions').map((item) => ({
+      ...item,
+      subscriptionStatus: item.subscriptionStatus || item.subscriptionState,
+      fundingStatus: item.fundingStatus || item.fundingState,
+      allocationStatus: item.allocationStatus || item.allocationState,
+      requestedAmount: item.requestedAmount ?? item.requestedAmountTwd,
+      approvedAmount: item.approvedAmount ?? item.approvedAmountTwd,
+      receivedAmount: item.receivedAmount ?? item.receivedAmountTwd,
+      allocatedAmount: item.allocatedAmount ?? item.allocatedAmountTwd,
+      refundedAmount: item.refundedAmount ?? item.refundedAmountTwd,
+      timeline: Array.isArray(item.timeline) ? item.timeline : [],
+    }));
     sourceNotice(result.source, document.querySelector('#member-source'));
     renderIdentity(); renderProjects(); renderSubscriptions();
   } catch (error) {
@@ -203,7 +214,7 @@ document.querySelector('#subscription-form').addEventListener('submit', async (e
   amountInput.removeAttribute('aria-invalid');
   setButtonBusy(button, true, '正在送出…');
   try {
-    const created = await api.createSubscription({ projectId: selectedProject.id, requestedAmount, riskAcknowledged: true }, submissionKey);
+    const created = await api.createSubscription({ projectId: selectedProject.id, requestedAmountTwd: requestedAmount, riskAcknowledged: true }, submissionKey);
     document.querySelector('#subscription-result').innerHTML = '<div class="notice" style="margin-top:18px"><strong>認購意向已送出</strong>｜目前狀態：待雪芬姐確認</div>';
     toast('認購意向已送出；這不是付款或契約。');
     const newRecord = created?.subscription || created;

@@ -44,14 +44,18 @@ Tests:
 
 ```bash
 npm test
+npm run typecheck:worker
+npm run build:worker
 npm run test:e2e
 ```
 
+`npm test` runs the Node API/domain suite, Cloudflare Workers integration suite, Apps Script VM/domain suite, and the cross-runtime operation contract check.
+
 ## GitHub Pages preview
 
-The Pages deployment is intentionally a **read-only interface preview**. It renders fictional public, member, and admin views, but it will not accept booking, activation, subscription, admin, LINE, or file-delivery writes. Run `npm run build:pages` to inspect the generated `dist-pages/` artifact.
+The default Pages deployment is intentionally a **read-only interface preview**. It renders fictional public, member, and admin views, but it will not accept booking, activation, subscription, admin, LINE, or file-delivery writes. Run `npm run build:pages` to inspect the generated `dist-pages/` artifact.
 
-The full workflow remains available through Docker. Production write paths require the Cloudflare Worker gateway and Apps Script/Sheets adapters described below; secrets and protected member data do not belong in GitHub Pages.
+When the repository variable `PUBLIC_API_BASE_URL` points to the production Cloudflare Worker, the build injects that public endpoint and disables every Demo write fallback. The full workflow remains available through Docker. Production write paths require the Cloudflare Worker gateway and Apps Script/Sheets adapters described below; secrets and protected member data do not belong in GitHub Pages.
 
 ## Demo roles
 
@@ -86,4 +90,4 @@ The Docker build runs these boundaries in one Node process for local acceptance.
 
 ## Confirmed scope
 
-See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements.
+See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements. The credential setup, deployment order, and live acceptance checklist are in [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). Implemented, locally verified, and still-external items are separated in [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).

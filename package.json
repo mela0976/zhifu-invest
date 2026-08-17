@@ -7,7 +7,13 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "node --test tests/*.test.js",
+    "test": "npm run test:node && npm run test:worker && npm run test:apps-script",
+    "test:node": "node --test tests/*.test.js",
+    "test:worker": "vitest run --config cloudflare/vitest.config.ts",
+    "test:apps-script": "node apps-script/tests/run-tests.cjs",
+    "typecheck:worker": "tsc -p cloudflare/tsconfig.json --noEmit",
+    "types:worker": "wrangler types cloudflare/src/worker-configuration.d.ts --config cloudflare/wrangler.jsonc",
+    "build:worker": "wrangler deploy --dry-run --config cloudflare/wrangler.jsonc --outdir .wrangler/dry-run",
     "test:e2e": "playwright test",
     "smoke": "node scripts/smoke.js",
     "build:pages": "node scripts/build-pages.js",
@@ -21,6 +27,11 @@
     "hono": "4.13.2"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1"
+    "@cloudflare/vitest-pool-workers": "^0.21.3",
+    "@playwright/test": "1.62.1",
+    "@types/node": "^22.20.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.123.0"
   }
 }

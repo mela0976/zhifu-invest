@@ -90,6 +90,10 @@ export function bindDialogDismissals() {
 }
 
 export function initShell() {
+  document.querySelectorAll('a[href^="/api/"]').forEach((link) => {
+    link.href = api.apiUrl(link.getAttribute('href'));
+  });
+
   const menuButton = document.querySelector('[data-menu-toggle]');
   const menu = document.querySelector('[data-mobile-menu]');
   menuButton?.addEventListener('click', () => {
@@ -140,6 +144,11 @@ export function initShell() {
       if (config?.staticPreview || api.isStaticPreview()) {
         const strip = document.querySelector('.demo-strip');
         if (strip) strip.textContent = 'GITHUB STATIC PREVIEW｜唯讀介面預覽，不會儲存或送出任何資料';
+      } else if (api.hasLiveApi()) {
+        const strip = document.querySelector('.demo-strip');
+        if (strip) strip.textContent = config?.demoMode
+          ? 'CONNECTED DEMO API｜資料由遠端 Demo 服務提供，不會回退瀏覽器內建會員資料'
+          : 'SECURE ONLINE SERVICE｜會員資料需登入並通過資格驗證';
       }
     })
     .catch(() => {});

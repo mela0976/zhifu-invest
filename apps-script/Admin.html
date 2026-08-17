@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    :root{--navy:#10243e;--ink:#172435;--ivory:#f7f4ed;--gold:#aa8a4b;--line:#d9d3c6;--green:#26735a;--red:#a33d3d}
+    *{box-sizing:border-box}body{margin:0;background:var(--ivory);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Noto Sans TC",sans-serif}
+    header{background:var(--navy);color:#fff;padding:18px clamp(16px,4vw,42px);display:flex;justify-content:space-between;align-items:center;gap:16px}
+    h1{font:600 clamp(20px,3vw,30px)/1.2 Georgia,"Noto Serif TC",serif;margin:0}header small{color:#d7c69d}
+    main{max-width:1280px;margin:auto;padding:24px clamp(14px,3vw,36px) 60px}.notice{border-left:4px solid var(--gold);padding:10px 14px;background:#fff8e7;margin-bottom:18px}
+    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px}.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 5px 20px #10243e0b}
+    .metric{font:600 27px/1.2 Georgia,serif;color:var(--navy)}.label{color:#5f6872;font-size:13px}.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0 12px}
+    button,select,input,textarea{font:inherit}button{border:0;border-radius:8px;padding:10px 14px;background:var(--navy);color:#fff;cursor:pointer}button.secondary{background:#fff;color:var(--navy);border:1px solid var(--line)}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #d2af67;outline-offset:2px}
+    .grid{display:grid;grid-template-columns:1.4fr 1fr;gap:16px}h2{font:600 20px Georgia,serif;margin:0 0 14px}.rows{display:grid;gap:9px}.row{border-top:1px solid var(--line);padding-top:10px;display:grid;grid-template-columns:1fr auto;gap:8px}.stamp{font-size:12px;border:1px solid currentColor;border-radius:99px;padding:3px 8px;align-self:start}.money{font-variant-numeric:tabular-nums}.error{color:var(--red)}.success{color:var(--green)}
+    dialog{border:0;border-radius:14px;max-width:600px;width:calc(100% - 24px);padding:0;box-shadow:0 22px 70px #0005}dialog::backdrop{background:#10243e99}form{padding:22px;display:grid;gap:12px}label{display:grid;gap:5px;font-weight:600}input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);border-radius:7px;background:#fff}.actions{display:flex;justify-content:flex-end;gap:8px}
+    @media(max-width:760px){.grid{grid-template-columns:1fr}header{align-items:flex-start}.row{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+  <header><div><h1>致富投資｜營運儀表板</h1><small>雪芬姐營運專區・Google allowlist 保護</small></div><button class="secondary" onclick="loadDashboard()">重新整理</button></header>
+  <main>
+    <div class="notice">金額與人物若標示 DEMO，均為虛構測試資料。拒絕、退款及群發通知必須人工核准。</div>
+    <div id="status" role="status" aria-live="polite">載入中…</div>
+    <section id="kpis" class="kpis" aria-label="營運指標"></section>
+    <div class="toolbar">
+      <button onclick="listResource('members')">會員</button><button onclick="listResource('subscriptions')">認購</button>
+      <button onclick="listResource('notifications')">通知佇列</button><button onclick="listResource('audits')">稽核</button>
+      <button class="secondary" onclick="exportResource('subscriptions')">匯出認購 CSV</button><button class="secondary" onclick="exportResource('audits')">匯出稽核 CSV</button>
+    </div>
+    <div class="grid"><section class="card"><h2>待處理事項</h2><div id="actions" class="rows"></div></section><section class="card"><h2 id="listTitle">近期認購</h2><div id="records" class="rows"></div></section></div>
+  </main>
+  <dialog id="subscriptionDialog"><form onsubmit="saveSubscription(event)"><h2>更新認購紀錄</h2><input type="hidden" name="subscriptionId">
+    <label>認購狀態<select name="subscriptionState"><option>submitted</option><option>operations_confirmed</option><option>partner_review</option><option>approved</option><option>rejected</option><option>cancelled</option></select></label>
+    <label>核准金額<input name="approvedAmountTwd" inputmode="numeric" required></label><label>已收金額<input name="receivedAmountTwd" inputmode="numeric" required></label>
+    <label>已配置金額<input name="allocatedAmountTwd" inputmode="numeric" required></label><label>已退款金額<input name="refundedAmountTwd" inputmode="numeric" required></label>
+    <label>合作機構核准人<input name="partnerApprover"></label><label>核准日期<input name="partnerApprovedAt" type="datetime-local"></label><label>核准編號<input name="partnerReference"></label>
+    <label>異動理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="subscriptionDialog.close()">取消</button><button>儲存並稽核</button></div>
+  </form></dialog>
+  <dialog id="memberDialog"><form onsubmit="saveMember(event)"><h2>確認會員</h2><input type="hidden" name="memberId"><div id="memberSummary" class="notice"></div>
+    <label>會員狀態<select name="membershipState"><option value="pending">待確認</option><option value="active">正式會員</option><option value="rejected">未通過</option><option value="disabled">已停用</option></select></label>
+    <label>異動理由<textarea name="reason" required placeholder="例如：已核對來源碼與本人手機"></textarea></label><div class="actions"><button type="button" class="secondary" onclick="memberDialog.close()">取消</button><button>確認並儲存</button></div>
+  </form></dialog>
+  <script>
+    const state={subscriptions:new Map(),members:new Map()};const money=v=>new Intl.NumberFormat('zh-TW',{style:'currency',currency:'TWD',maximumFractionDigits:0}).format(Number(v||0));
+    function rpc(operation,payload={}){return new Promise((resolve,reject)=>google.script.run.withSuccessHandler(r=>r.ok?resolve(r.data):reject(new Error(r.error.message))).withFailureHandler(reject).adminRpc({operation,payload}));}
+    function setStatus(text,error=false){const el=document.querySelector('#status');el.textContent=text;el.className=error?'error':'success'}
+    function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+    async function loadDashboard(){try{setStatus('載入中…');const data=await rpc('adminDashboard');const labels={members:'會員',pendingMembers:'待確認會員',qualifiedMembers:'合格會員',projects:'專案',subscriptions:'認購筆數',requestedAmountTwd:'申請總額',receivedAmountTwd:'到帳總額',notificationActions:'通知待辦'};document.querySelector('#kpis').innerHTML=Object.entries(labels).map(([k,l])=>`<article class="card"><div class="metric">${k.endsWith('Twd')?money(data.kpis[k]):esc(data.kpis[k])}</div><div class="label">${l}</div></article>`).join('');state.subscriptions=new Map(data.recentSubscriptions.map(r=>[r.id,r]));renderSubscriptions(data.recentSubscriptions);renderActions(data.actionQueue);setStatus(`資料更新：${new Date(data.generatedAt).toLocaleString('zh-TW')}`)}catch(e){setStatus(e.message,true)}}
+    function renderSubscriptions(records){document.querySelector('#listTitle').textContent='近期認購';document.querySelector('#records').innerHTML=records.map(r=>`<div class="row"><div><strong>${esc(r.memberName||r.memberId)}</strong><br><span class="label">${esc(r.projectName||r.projectId)}・${esc(r.id)}</span><br><span class="money">申請 ${money(r.requestedAmountTwd)}／核准 ${money(r.approvedAmountTwd)}／到帳 ${money(r.receivedAmountTwd)}</span></div><div><span class="stamp">${esc(r.subscriptionState)}</span><br><button onclick="editSubscription('${esc(r.id)}')">確認／更新</button></div></div>`).join('')||'目前沒有紀錄'}
+    function renderActions(queue){state.members=new Map(queue.members.map(x=>[x.id,x]));const items=[...queue.members.map(x=>({title:x.legalName||x.displayName,meta:'會員待確認 '+x.id,action:`<button onclick="editMember('${esc(x.id)}')">確認會員</button>`})),...queue.subscriptions.map(x=>({title:x.memberName||x.id,meta:'認購 '+x.subscriptionState,action:''})),...queue.notifications.map(x=>({title:x.eventType,meta:'通知 '+x.state,action:''}))];document.querySelector('#actions').innerHTML=items.map(x=>`<div class="row"><div><strong>${esc(x.title)}</strong><br><span class="label">${esc(x.meta)}</span></div>${x.action}</div>`).join('')||'目前沒有待辦'}
+    async function listResource(resource){try{const data=await rpc('adminList',{resource,limit:100});document.querySelector('#listTitle').textContent={members:'會員',subscriptions:'認購',notifications:'通知佇列',audits:'稽核'}[resource]||resource;if(resource==='subscriptions'){state.subscriptions=new Map(data.records.map(r=>[r.id,r]));return renderSubscriptions(data.records)}if(resource==='members')state.members=new Map(data.records.map(r=>[r.id,r]));document.querySelector('#records').innerHTML=data.records.map(r=>`<div class="row"><div><strong>${esc(r.legalName||r.displayName||r.eventType||r.action||r.id)}</strong><br><span class="label">${esc(r.membershipState||r.state||r.createdAt||'')}</span></div>${resource==='members'?`<button onclick="editMember('${esc(r.id)}')">確認／管理</button>`:r.state==='pending_manual'?`<button onclick="approveNotification('${esc(r.id)}')">人工核准</button>`:''}</div>`).join('')||'目前沒有紀錄'}catch(e){setStatus(e.message,true)}}
+    function editSubscription(id){const r=state.subscriptions.get(id);if(!r)return;const f=document.querySelector('#subscriptionDialog form');for(const [k,v] of Object.entries(r))if(f.elements[k])f.elements[k].value=v??'';if(r.partnerApproval){f.elements.partnerApprover.value=r.partnerApproval.approver;f.elements.partnerApprovedAt.value=String(r.partnerApproval.approvedAt).slice(0,16);f.elements.partnerReference.value=r.partnerApproval.reference}subscriptionDialog.showModal()}
+    async function saveSubscription(event){event.preventDefault();const f=new FormData(event.currentTarget);try{let approval;if(f.get('partnerReference')){if(!f.get('partnerApprover')||!f.get('partnerApprovedAt'))throw new Error('填寫核准編號時，合作機構核准人與日期也必填。');approval={approver:f.get('partnerApprover'),approvedAt:new Date(f.get('partnerApprovedAt')).toISOString(),reference:f.get('partnerReference')}}const patch={subscriptionState:f.get('subscriptionState'),approvedAmountTwd:Number(f.get('approvedAmountTwd')),receivedAmountTwd:Number(f.get('receivedAmountTwd')),allocatedAmountTwd:Number(f.get('allocatedAmountTwd')),refundedAmountTwd:Number(f.get('refundedAmountTwd'))};if(approval)patch.partnerApproval=approval;await rpc('adminPatchSubscription',{subscriptionId:f.get('subscriptionId'),patch,reason:f.get('reason')});subscriptionDialog.close();await loadDashboard()}catch(e){setStatus(e.message,true)}}
+    async function approveNotification(id){try{await rpc('adminApproveNotification',{notificationId:id,reason:'雪芬姐後台人工核准'});await listResource('notifications')}catch(e){setStatus(e.message,true)}}
+    function editMember(id){const r=state.members.get(id);if(!r)return;const f=document.querySelector('#memberDialog form');f.elements.memberId.value=r.id;f.elements.membershipState.value=r.membershipState;f.elements.reason.value='';document.querySelector('#memberSummary').textContent=`${r.legalName||r.displayName}｜${r.phone||'手機待補'}｜${r.sourceGroup||'來源待補'}`;memberDialog.showModal()}
+    async function saveMember(event){event.preventDefault();const f=new FormData(event.currentTarget);try{await rpc('adminPatchMember',{memberId:f.get('memberId'),patch:{membershipState:f.get('membershipState')},reason:f.get('reason')});memberDialog.close();await loadDashboard()}catch(e){setStatus(e.message,true)}}
+    async function exportResource(resource){try{const data=await rpc('adminExport',{resource,reason:'雪芬姐後台手動匯出'});const url=URL.createObjectURL(new Blob([data.csv],{type:data.mimeType}));const a=Object.assign(document.createElement('a'),{href:url,download:data.filename});a.click();URL.revokeObjectURL(url)}catch(e){setStatus(e.message,true)}}
+    loadDashboard();
+  </script>
+</body>
+</html>

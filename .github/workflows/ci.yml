@@ -18,5 +18,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: npm run typecheck:worker
+      - run: npm run build:worker
       - run: npm run build:pages
       - run: docker build --tag zhifu-invest:ci .

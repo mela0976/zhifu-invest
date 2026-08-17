@@ -1,8 +1,88 @@
 import { demoAdmin, demoMember, demoProjects, demoSubscriptions } from './demo-data.js';
 
-const isLocalHost = ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
-const isStaticPreview = window.location.hostname.endsWith('.github.io');
+const browserWindow = typeof window === 'undefined' ? null : window;
+const currentLocation = browserWindow?.location || { hostname: '', pathname: '/' };
+
+export function normalizeApiBaseUrl(value = '') {
+  const candidate = String(value || '').trim();
+  if (!candidate) return '';
+  try {
+    const url = new URL(candidate);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return '';
+    return url.href.replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export function resolveRuntimeMode({ hostname = '', apiBaseUrl = '' } = {}) {
+  if (String(apiBaseUrl || '').trim()) return normalizeApiBaseUrl(apiBaseUrl) ? 'live-api' : 'invalid-config';
+  if (String(hostname).toLowerCase().endsWith('.github.io')) return 'static-preview';
+  return 'same-origin';
+}
+
+export function canUseDemoFallback({ hostname = '', apiBaseUrl = '' } = {}) {
+  const mode = resolveRuntimeMode({ hostname, apiBaseUrl });
+  const local = ['localhost', '127.0.0.1', '0.0.0.0'].includes(String(hostname).toLowerCase());
+  return mode === 'static-preview' || (mode === 'same-origin' && local);
+}
+
+export function resolveApiUrl(path, apiBaseUrl = configuredApiBaseUrl) {
+  const value = String(path || '');
+  if (!value.startsWith('/api/')) return value;
+  const base = normalizeApiBaseUrl(apiBaseUrl);
+  return base ? `${base}${value}` : value;
+}
+
+const rawApiBaseUrl = browserWindow?.__ZHIFU_CONFIG__?.API_BASE_URL || '';
+const configuredApiBaseUrl = normalizeApiBaseUrl(rawApiBaseUrl);
+const runtimeMode = resolveRuntimeMode({ hostname: currentLocation.hostname, apiBaseUrl: rawApiBaseUrl });
+const isLocalHost = ['localhost', '127.0.0.1', '0.0.0.0'].includes(currentLocation.hostname);
+const isStaticPreview = runtimeMode === 'static-preview';
+const allowDemoFallback = canUseDemoFallback({ hostname: currentLocation.hostname, apiBaseUrl: rawApiBaseUrl });
 let detectedDemoMode = isLocalHost || isStaticPreview;
+let csrfToken = '';
+
+function sessionStorageSafe() {
+  try { return browserWindow?.sessionStorage || null; }
+  catch { return null; }
+}
+
+const csrfStorageKey = `zhifu_csrf:${configuredApiBaseUrl || 'same-origin'}`;
+
+function extractCsrfToken(payload) {
+  return payload?.csrfToken
+    || payload?.csrf_token
+    || payload?.data?.csrfToken
+    || payload?.data?.csrf_token
+    || '';
+}
+
+function rememberCsrfToken(payload) {
+  const token = extractCsrfToken(payload);
+  if (!token || typeof token !== 'string') return;
+  csrfToken = token;
+  sessionStorageSafe()?.setItem(csrfStorageKey, token);
+}
+
+function clearCsrfToken() {
+  csrfToken = '';
+  sessionStorageSafe()?.removeItem(csrfStorageKey);
+}
+
+function storedCsrfToken() {
+  if (csrfToken) return csrfToken;
+  csrfToken = sessionStorageSafe()?.getItem(csrfStorageKey) || '';
+  return csrfToken;
+}
+
+function isMutation(method = 'GET') {
+  return !['GET', 'HEAD', 'OPTIONS'].includes(String(method).toUpperCase());
+}
+
+export function shouldRejectStaticWrite(mode, method = 'GET') {
+  return mode === 'static-preview' && isMutation(method);
+}
 
 function staticWriteError() {
   const error = new Error('GitHub Pages 是唯讀預覽，不會儲存或送出資料；請使用本機 Docker Demo。');
@@ -11,15 +91,19 @@ function staticWriteError() {
 }
 
 function staticActor() {
-  try { return JSON.parse(sessionStorage.getItem('zhifu_static_actor') || 'null'); }
+  try { return JSON.parse(sessionStorageSafe()?.getItem('zhifu_static_actor') || 'null'); }
   catch { return null; }
 }
 
-export function appUrl(path = '/') {
-  if (!isStaticPreview) return path;
-  const repository = window.location.pathname.split('/').filter(Boolean)[0] || '';
+export function resolveAppUrl(path = '/', location = currentLocation) {
+  if (!String(location.hostname || '').endsWith('.github.io')) return path;
+  const repository = String(location.pathname || '/').split('/').filter(Boolean)[0] || '';
   const suffix = String(path).replace(/^\//, '');
   return `/${repository}/${suffix}`;
+}
+
+export function appUrl(path = '/') {
+  return resolveAppUrl(path, currentLocation);
 }
 
 function unwrap(payload) {
@@ -27,18 +111,38 @@ function unwrap(payload) {
   return payload;
 }
 
+async function ensureCsrfToken() {
+  const existing = storedCsrfToken();
+  if (existing) return existing;
+  try {
+    const session = await request('/api/auth/me', { _skipCsrf: true });
+    rememberCsrfToken(session);
+  } catch (error) {
+    if (![401, 403].includes(error.status)) console.info(`CSRF token 暫時無法取得：${error.message}`);
+  }
+  return storedCsrfToken();
+}
+
 async function request(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
+  const { _skipCsrf = false, ...fetchOptions } = options;
+  if (shouldRejectStaticWrite(runtimeMode, fetchOptions.method)) throw staticWriteError();
+  const headers = new Headers(fetchOptions.headers || {});
+  if (fetchOptions.body && !(fetchOptions.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  const response = await fetch(path, {
+
+  if (!_skipCsrf && String(path).startsWith('/api/') && isMutation(fetchOptions.method)) {
+    const token = await ensureCsrfToken();
+    if (token && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', token);
+  }
+
+  const response = await fetch(resolveApiUrl(path), {
     credentials: 'include',
-    ...options,
+    ...fetchOptions,
     headers,
-    body: options.body && !(options.body instanceof FormData) && typeof options.body !== 'string'
-      ? JSON.stringify(options.body)
-      : options.body,
+    body: fetchOptions.body && !(fetchOptions.body instanceof FormData) && typeof fetchOptions.body !== 'string'
+      ? JSON.stringify(fetchOptions.body)
+      : fetchOptions.body,
   });
 
   const contentType = response.headers.get('content-type') || '';
@@ -49,6 +153,7 @@ async function request(path, options = {}) {
     error.payload = payload;
     throw error;
   }
+  if (String(path).startsWith('/api/auth/me')) rememberCsrfToken(payload);
   return unwrap(payload);
 }
 
@@ -58,7 +163,7 @@ function withDemoFallback(label, fallbackFactory) {
       const data = await operation();
       return { data, source: detectedDemoMode ? 'demo-api' : 'api', error: null };
     } catch (error) {
-      if (!detectedDemoMode) throw error;
+      if (!allowDemoFallback) throw error;
       console.info(`[Demo fallback] ${label}: ${error.message}`);
       return { data: fallbackFactory(), source: 'demo-fallback', error };
     }
@@ -70,10 +175,22 @@ export const api = {
     try {
       const config = await request('/api/config');
       detectedDemoMode = Boolean(config?.demoMode ?? config?.mode === 'demo' ?? isLocalHost);
-      return config;
+      return {
+        ...config,
+        staticPreview: false,
+        apiBaseUrl: configuredApiBaseUrl,
+        lineLoginUrl: resolveApiUrl(config?.lineLoginUrl || '/api/auth/line'),
+      };
     } catch (error) {
       if (!isLocalHost && !isStaticPreview) throw error;
-      return { demoMode: true, staticPreview: isStaticPreview, lineConfigured: false, projectName: '致富投資' };
+      return {
+        demoMode: true,
+        staticPreview: isStaticPreview,
+        lineConfigured: false,
+        projectName: '致富投資',
+        apiBaseUrl: '',
+        lineLoginUrl: resolveApiUrl('/api/auth/line'),
+      };
     }
   },
 
@@ -83,6 +200,14 @@ export const api = {
 
   isStaticPreview() {
     return isStaticPreview;
+  },
+
+  hasLiveApi() {
+    return runtimeMode === 'live-api';
+  },
+
+  apiUrl(path) {
+    return resolveApiUrl(path);
   },
 
   projects: () => withDemoFallback('projects', () => structuredClone(demoProjects))(
@@ -103,15 +228,22 @@ export const api = {
 
   demoLogin: async (role, memberId) => {
     if (isStaticPreview) {
-      sessionStorage.setItem('zhifu_static_actor', JSON.stringify({ role, memberId: memberId || null }));
+      sessionStorageSafe()?.setItem('zhifu_static_actor', JSON.stringify({ role, memberId: memberId || null }));
       return { role, subject: role === 'admin' ? { id: 'admin-static-demo', displayName: '雪芬姐 DEMO' } : structuredClone(demoMember) };
     }
-    return request('/api/auth/demo', { method: 'POST', body: { role, ...(memberId ? { memberId } : {}) } });
+    const session = await request('/api/auth/demo', { method: 'POST', body: { role, ...(memberId ? { memberId } : {}) } });
+    clearCsrfToken();
+    return session;
   },
 
   logout: async () => {
-    if (isStaticPreview) { sessionStorage.removeItem('zhifu_static_actor'); return { ok: true }; }
-    return request('/api/auth/logout', { method: 'POST' });
+    if (isStaticPreview) {
+      sessionStorageSafe()?.removeItem('zhifu_static_actor');
+      clearCsrfToken();
+      return { ok: true };
+    }
+    try { return await request('/api/auth/logout', { method: 'POST' }); }
+    finally { clearCsrfToken(); }
   },
 
   activate: (input) => isStaticPreview
