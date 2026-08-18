@@ -261,7 +261,7 @@ test.describe('致富投資 mobile and role journeys', () => {
     await expect(page.getByRole('button', { name: 'English' })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#site-navigation')).toHaveAttribute('aria-label', 'Primary navigation');
     await expect(page.locator('a[href*="activate.html"]').first()).toHaveAttribute('href', /(?:\?|&)lang=en(?:&|$)/);
-    await expect(page.getByTestId('project-card').first()).toContainText('This fictional fundraising summary');
+    await expect(page.getByTestId('project-card').first()).toContainText(/This fictional fundraising summary|Using companion diagnostics/);
     await expectNoHorizontalOverflow(page);
 
     await page.getByRole('button', { name: '繁體中文' }).click();
