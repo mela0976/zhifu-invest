@@ -182,4 +182,13 @@ test('Pages build injects runtime config before every module and rewrites API li
   const index = await readFile(join(directory, 'index.html'), 'utf8');
   assert.match(index, /power by 奇華智能投資顧問股份有限公司/);
   assert.doesNotMatch(index, /奇華智能投資顧問股份有限公司（名稱待核）/);
+  assert.match(index, /href="\/zhifu-invest\/assets\/landing\.css"/);
+  assert.match(index, /src="\/zhifu-invest\/assets\/images\/landing-hero\.webp"/);
+  assert.match(index, /src="\/zhifu-invest\/assets\/images\/landing-research\.webp"/);
+
+  const landingCss = await readFile(join(directory, 'assets', 'landing.css'), 'utf8');
+  assert.match(landingCss, /\.landing-page/);
+  assert.doesNotMatch(landingCss, /#0e3252|#19d2bb/i);
+  assert.ok((await readFile(join(directory, 'assets', 'images', 'landing-hero.webp'))).byteLength > 40_000);
+  assert.ok((await readFile(join(directory, 'assets', 'images', 'landing-research.webp'))).byteLength > 40_000);
 });

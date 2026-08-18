@@ -169,6 +169,26 @@ test.describe('致富投資 mobile and role journeys', () => {
       'The primary mobile conversion should lead to the linked LINE Official Account.',
     ).toBeVisible();
     await expect(page.getByText(/投資.*風險|非.*投資建議|風險揭露/).first()).toBeVisible();
+    await expect(page.getByRole('heading', { name: /不是把標的放上網.*而是先把判斷方法說清楚/ })).toBeVisible();
+    expect(await page.locator('.landing-hero__image').evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
+
+    const menuToggle = page.locator('[data-menu-toggle]');
+    await menuToggle.click();
+    await expect(menuToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('#site-navigation')).toHaveAttribute('data-open', '');
+    await page.locator('#site-navigation a[href="#about"]').click();
+    await expect(menuToggle).toHaveAttribute('aria-expanded', 'false');
+
+    const filterButtons = page.locator('#project-filters [data-filter]');
+    await expect(filterButtons.first()).toBeVisible();
+    if ((await filterButtons.count()) > 1) {
+      await filterButtons.nth(1).click();
+      await expect(filterButtons.nth(1)).toHaveAttribute('aria-pressed', 'true');
+    }
+    await page.getByTestId('project-card').first().getByRole('button', { name: '查看研究摘要' }).click();
+    await expect(page.locator('#project-dialog')).toBeVisible();
+    await page.locator('#project-dialog [data-dialog-close]').first().click();
+    await expect(page.locator('#project-dialog')).not.toBeVisible();
 
     await expectNoHorizontalOverflow(page);
     expect(await accessibilitySmoke(page)).toEqual({
@@ -190,6 +210,19 @@ test.describe('致富投資 mobile and role journeys', () => {
     await page.locator('#booking-form input[name="consent"]').check();
     await page.getByRole('button', { name: '送出預約需求' }).click();
     await expect(page.getByText('預約需求已送出，引薦人確認後會通知你。')).toBeVisible();
+  });
+
+  test('landing page keeps its ledger layout at tablet and desktop widths', async ({ page }) => {
+    for (const viewport of [
+      { width: 768, height: 1024 },
+      { width: 1440, height: 1000 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(paths.landing, { waitUntil: 'networkidle' });
+      await expect(page.locator('.landing-signal')).toBeVisible();
+      await expect(page.locator('.landing-metrics article')).toHaveCount(4);
+      await expectNoHorizontalOverflow(page);
+    }
   });
 
   test('community activation link prefills source tracking fields', async ({ page }) => {
