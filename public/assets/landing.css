@@ -123,6 +123,13 @@
 .landing-header .menu-toggle::before,
 .landing-header .menu-toggle::after { background: var(--landing-white); }
 
+.landing-header .locale-switcher {
+  color: var(--landing-white);
+  border-color: rgba(255, 255, 255, .38);
+  background: rgba(5, 19, 31, .28);
+}
+.landing-header .locale-switcher button[aria-pressed='true'] { color: var(--landing-navy-deep); background: var(--landing-gold); }
+
 .landing-hero {
   position: relative;
   min-height: max(720px, 100svh);
@@ -608,7 +615,9 @@
   html[data-menu-open],
   html[data-menu-open] body { overflow: hidden; }
   .landing-container { width: min(calc(100% - 32px), var(--landing-content)); }
-  .landing-header .header__inner { width: calc(100% - 32px); min-height: 74px; }
+  .landing-header .header__inner { width: calc(100% - 32px); min-height: 74px; gap: 6px; }
+  .landing-header .locale-switcher { margin-left: auto; }
+  .landing-header .locale-switcher button { min-width: 44px; padding-inline: 7px; }
   .landing-header .brand__name { font-size: 18px; }
   .landing-header .brand__descriptor { display: block; }
   .landing-header .landing-brand { min-height: 44px; }

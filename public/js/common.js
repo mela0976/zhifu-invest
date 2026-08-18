@@ -1,14 +1,11 @@
 import { api, appUrl } from './api.js';
-
-const moneyFormatter = new Intl.NumberFormat('zh-TW', {
-  style: 'currency', currency: 'TWD', maximumFractionDigits: 0,
-});
+import { getLocale, initI18n, localeUrl, t } from './i18n.js';
 
 export function formatMoney(value, compact = false) {
   const number = Number(value || 0);
-  if (compact && number >= 100000000) return `NT$ ${(number / 100000000).toFixed(1)} 億`;
-  if (compact && number >= 10000) return `NT$ ${(number / 10000).toFixed(number % 10000 ? 1 : 0)} 萬`;
-  return moneyFormatter.format(number).replace('$', '$ ');
+  const locale = getLocale() === 'en' ? 'en-US' : 'zh-TW';
+  if (compact) return new Intl.NumberFormat(locale, { style: 'currency', currency: 'TWD', notation: 'compact', maximumFractionDigits: 1 }).format(number).replace('$', '$ ');
+  return new Intl.NumberFormat(locale, { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(number).replace('$', '$ ');
 }
 
 export function escapeHtml(value = '') {
@@ -21,10 +18,10 @@ export function escapeHtml(value = '') {
 }
 
 export function formatDate(value) {
-  if (!value) return '尚未設定';
+  if (!value) return t('尚未設定');
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return escapeHtml(value);
-  return new Intl.DateTimeFormat('zh-TW', { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
+  return new Intl.DateTimeFormat(getLocale() === 'en' ? 'en-US' : 'zh-TW', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'Asia/Taipei' }).format(date);
 }
 
 export function announce(message) {
@@ -55,7 +52,7 @@ export function setButtonBusy(button, busy, busyText = '處理中…') {
   if (!button) return;
   if (busy) {
     button.dataset.label = button.textContent;
-    button.textContent = busyText;
+    button.textContent = t(busyText);
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
   } else {
@@ -129,6 +126,8 @@ function setDemoControlsVisible(visible) {
 }
 
 export function initShell() {
+  const localizedSurface = !document.body.classList.contains('portal-body') && !document.body.classList.contains('admin-body');
+  if (localizedSurface) initI18n();
   if (api.hasLiveApi()) setDemoControlsVisible(false);
   document.querySelectorAll('a[href^="/api/"]').forEach((link) => {
     link.href = api.apiUrl(link.getAttribute('href'));
@@ -142,7 +141,7 @@ export function initShell() {
   ].filter(Boolean);
   const setMenuOpen = (open, { restoreFocus = false } = {}) => {
     menuButton?.setAttribute('aria-expanded', String(open));
-    menuButton?.setAttribute('aria-label', open ? '關閉選單' : '開啟選單');
+    menuButton?.setAttribute('aria-label', t(open ? '關閉選單' : '開啟選單'));
     menu?.toggleAttribute('data-open', open);
     document.documentElement.toggleAttribute('data-menu-open', open);
     if (open) window.requestAnimationFrame(() => menuFocusable()[1]?.focus());
@@ -233,7 +232,7 @@ export function initShell() {
       setButtonBusy(button, true, '切換中…');
       try {
         await api.demoLogin(role, memberId);
-        window.location.href = appUrl(role === 'admin' ? '/admin.html' : '/member.html');
+        window.location.href = localizedSurface ? localeUrl(appUrl(role === 'admin' ? '/admin.html' : '/member.html')) : appUrl(role === 'admin' ? '/admin.html' : '/member.html');
       } catch (error) {
         toast(`無法切換 Demo 身分：${error.message}`, 'error');
         setButtonBusy(button, false);
@@ -279,9 +278,9 @@ export function sourceNotice(source, target) {
 }
 
 export function emptyState(title, detail, action = '') {
-  return `<div class="empty-state"><span class="empty-state__mark" aria-hidden="true">＋</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(detail)}</p>${action}</div>`;
+  return `<div class="empty-state"><span class="empty-state__mark" aria-hidden="true">＋</span><h3>${escapeHtml(t(title))}</h3><p>${escapeHtml(t(detail))}</p>${action}</div>`;
 }
 
 export function errorState(title, detail, retryId = '') {
-  return `<div class="empty-state empty-state--error"><span class="empty-state__mark" aria-hidden="true">!</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(detail)}</p>${retryId ? `<button class="button button--secondary" type="button" id="${escapeHtml(retryId)}">重新載入</button>` : ''}</div>`;
+  return `<div class="empty-state empty-state--error"><span class="empty-state__mark" aria-hidden="true">!</span><h3>${escapeHtml(t(title))}</h3><p>${escapeHtml(t(detail))}</p>${retryId ? `<button class="button button--secondary" type="button" id="${escapeHtml(retryId)}">${escapeHtml(t('重新載入'))}</button>` : ''}</div>`;
 }

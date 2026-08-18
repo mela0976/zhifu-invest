@@ -1,5 +1,6 @@
 import { api, appUrl } from './api.js';
 import { activationSourceFromUrl, escapeHtml, setButtonBusy, toast } from './common.js';
+import { initI18n, localeUrl, t } from './i18n.js';
 
 const form = document.querySelector('#activation-form');
 const card = document.querySelector('#activation-card');
@@ -35,8 +36,8 @@ function markStep(name) {
 
 function showAuthenticated(member) {
   const user = member?.member || member?.user || member;
-  const name = user?.name || user?.displayName || 'LINE 會員';
-  lineStatus.innerHTML = `<span class="line-lockup__mark" aria-hidden="true">✓</span><div><strong>已連結 ${escapeHtml(name)}</strong><div class="micro">接著加入官方帳號並填寫社群來源。</div></div>`;
+  const name = user?.name || user?.displayName || t('LINE 會員');
+  lineStatus.innerHTML = `<span class="line-lockup__mark" aria-hidden="true">✓</span><div><strong>${t('已連結')} ${escapeHtml(name)}</strong><div class="micro">${t('接著加入官方帳號並填寫社群來源。')}</div></div>`;
   lineActions.hidden = true;
   form.hidden = false;
   document.querySelector('#activation-name').value = user?.name || '';
@@ -92,7 +93,7 @@ form.addEventListener('submit', async (event) => {
     const environmentNote = api.isDemo()
       ? 'Demo 環境會立即保留這筆操作；正式審核仍須由管理後台確認。'
       : '申請已安全送交營運端；會員狀態仍須由引薦人人工確認。';
-    card.innerHTML = `<div class="success-panel"><span class="success-panel__mark" aria-hidden="true">✓</span><p class="eyebrow">Application received</p><h2>申請已送出</h2><p>引薦人將核對你的社群來源。確認完成後，LINE 只會通知「狀態已更新」，請回到會員中心查看內容。</p><a class="button" href="${escapeHtml(appUrl('/member.html'))}">查看會員中心</a></div><p class="micro" style="margin-top:18px;text-align:center">${escapeHtml(environmentNote)}</p>`;
+    card.innerHTML = `<div class="success-panel"><span class="success-panel__mark" aria-hidden="true">✓</span><p class="eyebrow">Application received</p><h2>${t('申請已送出')}</h2><p>${t('引薦人將核對你的社群來源。確認完成後，LINE 只會通知「狀態已更新」，請回到會員中心查看內容。')}</p><a class="button" href="${escapeHtml(localeUrl(appUrl('/member.html')))}">${t('查看會員中心')}</a></div><p class="micro" style="margin-top:18px;text-align:center">${escapeHtml(environmentNote)}</p>`;
   } catch (error) {
     toast(`申請未送出：${error.message}`, 'error');
   } finally {
@@ -100,5 +101,6 @@ form.addEventListener('submit', async (event) => {
   }
 });
 
+initI18n();
 prefillCommunitySource();
 initialize();

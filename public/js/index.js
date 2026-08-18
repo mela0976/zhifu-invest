@@ -1,5 +1,6 @@
 import { api } from './api.js';
 import { emptyState, errorState, escapeHtml, formatMoney, initShell, openDialog, setButtonBusy, sourceNotice, toast } from './common.js';
+import { t } from './i18n.js';
 
 const grid = document.querySelector('#project-grid');
 const filters = document.querySelector('#project-filters');
@@ -18,18 +19,18 @@ function projectCard(project) {
   const id = escapeHtml(project.id || project.code);
   return `<article class="project-card" data-industry="${escapeHtml(project.industry)}" data-testid="project-card">
     <div class="project-card__rail"></div>
-    <div class="project-card__head"><span class="project-card__code">${escapeHtml(project.code || project.id)}</span><span class="status">${escapeHtml(project.status || '研究中')}</span></div>
+    <div class="project-card__head"><span class="project-card__code">${escapeHtml(project.code || project.id)}</span><span class="status">${escapeHtml(t(project.status || '研究中'))}</span></div>
     <div class="project-card__body">
       <h3>${escapeHtml(project.displayName || project.name)}</h3>
-      <p>${escapeHtml(project.summary || '專案摘要整理中。')}</p>
+      <p>${escapeHtml(t(project.summary || '專案摘要整理中。'))}</p>
       <ul class="project-card__meta">
-        <li><span>Industry</span><strong>${escapeHtml(project.industry || '待分類')}</strong></li>
-        <li><span>Stage</span><strong>${escapeHtml(project.stage || '待確認')}</strong></li>
-        <li><span>Region</span><strong>${escapeHtml(project.region || '台灣')}</strong></li>
-        <li><span>Access</span><strong>${project.visibility === 'member' ? '正式會員' : '逐案授權'}</strong></li>
+        <li><span>Industry</span><strong>${escapeHtml(t(project.industry || '待分類'))}</strong></li>
+        <li><span>Stage</span><strong>${escapeHtml(t(project.stage || '待確認'))}</strong></li>
+        <li><span>Region</span><strong>${escapeHtml(t(project.region || '台灣'))}</strong></li>
+        <li><span>Access</span><strong>${escapeHtml(t(project.visibility === 'member' ? '正式會員' : '逐案授權'))}</strong></li>
       </ul>
     </div>
-    <div class="project-card__foot"><span class="micro">公開匿名摘要</span><button class="button button--quiet button--small project-card__link" type="button" data-project-open="${id}">查看研究摘要</button></div>
+    <div class="project-card__foot"><span class="micro">${escapeHtml(t('公開匿名摘要'))}</span><button class="button button--quiet button--small project-card__link" type="button" data-project-open="${id}">${escapeHtml(t('查看研究摘要'))}</button></div>
   </article>`;
 }
 
@@ -42,7 +43,7 @@ function renderProjects() {
 
 function renderFilters() {
   const industries = [...new Set(projects.map((project) => project.industry).filter(Boolean))];
-  filters.innerHTML = `<button class="filter-chip" type="button" aria-pressed="true" data-filter="all">全部研究</button>${industries.map((industry) => `<button class="filter-chip" type="button" aria-pressed="false" data-filter="${escapeHtml(industry)}">${escapeHtml(industry)}</button>`).join('')}`;
+  filters.innerHTML = `<button class="filter-chip" type="button" aria-pressed="true" data-filter="all">${escapeHtml(t('全部研究'))}</button>${industries.map((industry) => `<button class="filter-chip" type="button" aria-pressed="false" data-filter="${escapeHtml(industry)}">${escapeHtml(t(industry))}</button>`).join('')}`;
 }
 
 function showProject(id) {
@@ -52,18 +53,18 @@ function showProject(id) {
   const highlights = project.highlights || [];
   const demoPrefix = project.demo || api.isDemo() ? '<strong>DEMO</strong>｜' : '';
   dialogBody.innerHTML = `
-    <p class="notice">${demoPrefix}公開頁只提供匿名摘要，完整公司資料與募資條件須完成資格及逐案授權。</p>
-    <p class="lede" style="font-size:17px">${escapeHtml(project.summary)}</p>
-    <dl class="qualification"><div class="qualification__head"><h3>研究索引</h3><span class="status">${escapeHtml(project.status || '研究中')}</span></div><dl>
-      <dt>產業</dt><dd>${escapeHtml(project.industry)}</dd><dt>階段</dt><dd>${escapeHtml(project.stage)}</dd><dt>地區</dt><dd>${escapeHtml(project.region)}</dd><dt>最低認購</dt><dd>登入並取得權限後查看</dd>
+    <p class="notice">${demoPrefix}${escapeHtml(t('公開頁只提供匿名摘要，完整公司資料與募資條件須完成資格及逐案授權。'))}</p>
+    <p class="lede" style="font-size:17px">${escapeHtml(t(project.summary))}</p>
+    <dl class="qualification"><div class="qualification__head"><h3>${escapeHtml(t('研究索引'))}</h3><span class="status">${escapeHtml(t(project.status || '研究中'))}</span></div><dl>
+      <dt>${escapeHtml(t('產業'))}</dt><dd>${escapeHtml(t(project.industry))}</dd><dt>${escapeHtml(t('階段'))}</dt><dd>${escapeHtml(t(project.stage))}</dd><dt>${escapeHtml(t('地區'))}</dt><dd>${escapeHtml(t(project.region))}</dd><dt>${escapeHtml(t('最低認購'))}</dt><dd>${escapeHtml(t('登入並取得權限後查看'))}</dd>
     </dl></dl>
-    ${highlights.length ? `<h3 style="margin-top:24px">核心觀察</h3><ul>${highlights.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
-    <h3 style="margin-top:24px">一般風險提示</h3><p class="micro">${escapeHtml(project.risk || '新創與未上市投資具有高度不確定性，可能損失全部投入資金。')}</p>`;
+    ${highlights.length ? `<h3 style="margin-top:24px">${escapeHtml(t('核心觀察'))}</h3><ul>${highlights.map((item) => `<li>${escapeHtml(t(item))}</li>`).join('')}</ul>` : ''}
+    <h3 style="margin-top:24px">${escapeHtml(t('一般風險提示'))}</h3><p class="micro">${escapeHtml(t(project.risk || '新創與未上市投資具有高度不確定性，可能損失全部投入資金。'))}</p>`;
   openDialog(projectDialog);
 }
 
 async function loadProjects() {
-  grid.innerHTML = '<div class="loading-state" style="grid-column:1/-1"><div><p>正在整理研究索引</p><div class="loading-line"></div></div></div>';
+  grid.innerHTML = `<div class="loading-state" style="grid-column:1/-1"><div><p>${escapeHtml(t('正在整理研究索引'))}</p><div class="loading-line"></div></div></div>`;
   try {
     const result = await api.projects();
     projects = normalizeProjects(result.data);
@@ -97,7 +98,7 @@ document.querySelector('#booking-form')?.addEventListener('submit', async (event
   try {
     await api.createBooking(Object.fromEntries(new FormData(form)));
     form.reset();
-    toast('預約需求已送出，引薦人確認後會通知你。');
+    toast(t('預約需求已送出，引薦人確認後會通知你。'));
   } catch (error) {
     toast(`預約未送出：${error.message}`, 'error');
   } finally {

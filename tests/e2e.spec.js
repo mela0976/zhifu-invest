@@ -250,6 +250,51 @@ test.describe('致富投資 mobile and role journeys', () => {
     await expect(page.getByText('預約需求已送出，引薦人確認後會通知你。')).toBeVisible();
   });
 
+  test('language URL, browser preference, manual choice, and history stay in sync', async ({ page, browser }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const separator = paths.landing.includes('?') ? '&' : '?';
+    await page.goto(`${paths.landing}${separator}lang=en`, { waitUntil: 'networkidle' });
+
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page).toHaveTitle('Zhifu Investment | Understand the industry first');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('understand the industry first');
+    await expect(page.getByRole('button', { name: 'English' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#site-navigation')).toHaveAttribute('aria-label', 'Primary navigation');
+    await expect(page.locator('a[href*="activate.html"]').first()).toHaveAttribute('href', /(?:\?|&)lang=en(?:&|$)/);
+    await expect(page.getByTestId('project-card').first()).toContainText('This fictional fundraising summary');
+    await expectNoHorizontalOverflow(page);
+
+    await page.getByRole('button', { name: '繁體中文' }).click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hant');
+    await expect(page).toHaveTitle('致富投資｜讓資金，先看懂產業');
+    await expect(page).toHaveURL(/(?:\?|&)lang=zh-TW(?:&|$)/);
+    await expect(page.locator('a[href*="activate.html"]').first()).toHaveAttribute('href', /(?:\?|&)lang=zh-TW(?:&|$)/);
+
+    await page.goBack();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('understand the industry first');
+    await expect(page).toHaveURL(/(?:\?|&)lang=en(?:&|$)/);
+
+    const activateSeparator = paths.activate.includes('?') ? '&' : '?';
+    await page.goto(`${paths.activate}${activateSeparator}lang=en&sourceCode=REFERRER-NORTH&sourceName=North`);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('community identity');
+    await expect(page.locator('#activation-code')).toHaveValue('REFERRER-NORTH');
+    await expectNoHorizontalOverflow(page);
+
+    await page.goto(new URL('risk.html?lang=en', page.url()).href);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page).toHaveTitle('Investment Risk & Anti-Fraud Notice | Zhifu Investment');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Investment risk and anti-fraud notice');
+
+    const englishBrowser = await browser.newContext({ locale: 'en-US', viewport: { width: 390, height: 844 } });
+    const firstVisit = await englishBrowser.newPage();
+    await firstVisit.goto(new URL(paths.landing, page.url()).href);
+    await expect(firstVisit.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(firstVisit).toHaveURL(/(?:\?|&)lang=en(?:&|$)/);
+    await englishBrowser.close();
+  });
+
   test('mobile viewport matrix keeps controls clear, tappable, and safe-area aware', async ({ page }) => {
     for (const width of [320, 360, 375, 390, 412]) {
       await page.setViewportSize({ width, height: 844 });
