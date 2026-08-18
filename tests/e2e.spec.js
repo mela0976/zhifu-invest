@@ -178,9 +178,18 @@ test.describe('致富投資 mobile and role journeys', () => {
     await expect(page.locator('#site-navigation')).toHaveAttribute('data-open', '');
     await page.locator('#site-navigation a[href="#about"]').click();
     await expect(menuToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('html')).not.toHaveAttribute('data-menu-open', '');
 
     const filterButtons = page.locator('#project-filters [data-filter]');
     await expect(filterButtons.first()).toBeVisible();
+    await expect(page.getByRole('group', { name: '依產業篩選' })).toBeVisible();
+    const projectRail = page.getByRole('region', { name: '募資研究輪播' });
+    await expect(projectRail).toHaveAttribute('tabindex', '0');
+    await projectRail.focus();
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(180);
+    expect(await projectRail.evaluate((rail) => rail.scrollLeft)).toBeGreaterThan(0);
+    await projectRail.evaluate((rail) => rail.scrollTo({ left: 0, behavior: 'auto' }));
     if ((await filterButtons.count()) > 1) {
       await filterButtons.nth(1).click();
       await expect(filterButtons.nth(1)).toHaveAttribute('aria-pressed', 'true');
@@ -189,6 +198,35 @@ test.describe('致富投資 mobile and role journeys', () => {
     await expect(page.locator('#project-dialog')).toBeVisible();
     await page.locator('#project-dialog [data-dialog-close]').first().click();
     await expect(page.locator('#project-dialog')).not.toBeVisible();
+    await expect(page.getByText('左右滑動查看更多研究')).toBeVisible();
+
+    const contrastRatios = await page.evaluate(() => {
+      const rgb = (value) => (value.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+      const luminance = (value) => {
+        const channels = rgb(value).map((channel) => {
+          const normalized = channel / 255;
+          return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+      };
+      const ratio = (foreground, background) => {
+        const first = luminance(foreground);
+        const second = luminance(background);
+        return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+      };
+      const pair = (selector, backgroundSelector) => ratio(
+        getComputedStyle(document.querySelector(selector)).color,
+        getComputedStyle(document.querySelector(backgroundSelector)).backgroundColor,
+      );
+      return [
+        pair('.landing-metrics strong', '.landing-platform'),
+        pair('.landing-page-count span', '.landing-page'),
+        pair('.landing-filter-row .filter-chip:last-child', '.landing-page'),
+        pair('.landing-footer__top p', '.landing-footer'),
+        pair('.landing-footer__legal', '.landing-footer'),
+      ];
+    });
+    expect(Math.min(...contrastRatios)).toBeGreaterThanOrEqual(4.5);
 
     await expectNoHorizontalOverflow(page);
     expect(await accessibilitySmoke(page)).toEqual({
@@ -210,6 +248,122 @@ test.describe('致富投資 mobile and role journeys', () => {
     await page.locator('#booking-form input[name="consent"]').check();
     await page.getByRole('button', { name: '送出預約需求' }).click();
     await expect(page.getByText('預約需求已送出，引薦人確認後會通知你。')).toBeVisible();
+  });
+
+  test('mobile viewport matrix keeps controls clear, tappable, and safe-area aware', async ({ page }) => {
+    for (const width of [320, 360, 375, 390, 412]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(paths.landing, { waitUntil: 'networkidle' });
+      await expectNoHorizontalOverflow(page);
+
+      const geometry = await page.evaluate(() => {
+        const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+        const strip = box('.demo-strip');
+        const header = box('.landing-header');
+        const toggle = box('[data-menu-toggle]');
+        const primary = box('.landing-action--signal');
+        const targetSelectors = [
+          '.landing-header .landing-brand',
+          '.landing-section-note a',
+          '.landing-story a',
+          '.landing-footer .landing-brand',
+          '.landing-footer__top nav a',
+          '.landing-footer__middle .footer__links > a',
+          '.landing-footer [data-demo-login]',
+        ];
+        return {
+          stripBottom: strip?.bottom || 0,
+          headerTop: header?.top || 0,
+          toggle: { width: toggle?.width || 0, height: toggle?.height || 0 },
+          primary: { width: primary?.width || 0, height: primary?.height || 0 },
+          importantTargetHeights: targetSelectors.flatMap((selector) => [...document.querySelectorAll(selector)].map((element) => element.getBoundingClientRect().height)),
+        };
+      });
+      expect(geometry.headerTop).toBeGreaterThanOrEqual(geometry.stripBottom - 1);
+      expect(geometry.toggle.width).toBeGreaterThanOrEqual(44);
+      expect(geometry.toggle.height).toBeGreaterThanOrEqual(44);
+      expect(geometry.primary.width).toBeGreaterThanOrEqual(44);
+      expect(geometry.primary.height).toBeGreaterThanOrEqual(48);
+      expect(Math.min(...geometry.importantTargetHeights)).toBeGreaterThanOrEqual(44);
+
+      const menuToggle = page.locator('[data-menu-toggle]');
+      await menuToggle.click();
+      await expect(menuToggle).toHaveAttribute('aria-label', '關閉選單');
+      await expect(page.locator('#site-navigation a').first()).toBeFocused();
+      const menuHeights = await page.locator('#site-navigation a').evaluateAll((links) => links.map((link) => link.getBoundingClientRect().height));
+      expect(Math.min(...menuHeights)).toBeGreaterThanOrEqual(44);
+      const menuScrollY = await page.evaluate(() => window.scrollY);
+      await page.mouse.wheel(0, 500);
+      await page.waitForTimeout(60);
+      expect(await page.evaluate(() => window.scrollY)).toBe(menuScrollY);
+      await page.keyboard.press('Escape');
+      await expect(menuToggle).toBeFocused();
+      await expect(menuToggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(menuToggle).toHaveAttribute('aria-label', '開啟選單');
+
+      await expect(page.getByText('左右滑動查看更多研究')).toBeVisible();
+      const projectButton = page.locator('[data-project-open]').first();
+      await projectButton.scrollIntoViewIfNeeded();
+      expect((await projectButton.boundingBox())?.height || 0).toBeGreaterThanOrEqual(44);
+      await projectButton.click();
+      const dialogBox = await page.locator('#project-dialog').boundingBox();
+      expect(dialogBox?.x || 0).toBeGreaterThanOrEqual(0);
+      expect(dialogBox?.y || 0).toBeGreaterThanOrEqual(0);
+      expect((dialogBox?.x || 0) + (dialogBox?.width || 0)).toBeLessThanOrEqual(width);
+      expect((dialogBox?.y || 0) + (dialogBox?.height || 0)).toBeLessThanOrEqual(844);
+      const dialogActions = page.locator('#project-dialog .dialog__foot .button');
+      await expect(dialogActions).toHaveCount(2);
+      for (let index = 0; index < (await dialogActions.count()); index += 1) {
+        const actionBox = await dialogActions.nth(index).boundingBox();
+        expect(actionBox?.height || 0).toBeGreaterThanOrEqual(44);
+        expect((actionBox?.y || 0) + (actionBox?.height || 0)).toBeLessThanOrEqual(844);
+      }
+      await page.locator('#project-dialog [data-dialog-close]').first().click();
+
+      await page.locator('#insights').scrollIntoViewIfNeeded();
+      const mobileDock = page.locator('[data-mobile-dock]');
+      await expect(mobileDock).toHaveAttribute('data-visible', '');
+      expect((await mobileDock.getByRole('link', { name: /開啟 LINE/ }).boundingBox())?.height || 0).toBeGreaterThanOrEqual(44);
+      await page.locator('.landing-footer').scrollIntoViewIfNeeded();
+      await expect(mobileDock).not.toHaveAttribute('data-visible', '');
+    }
+  });
+
+  test('touch emulation can operate the menu, filters, project dialog, and form', async ({ baseURL, browser }) => {
+    const context = await browser.newContext({
+      baseURL,
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 3,
+      hasTouch: true,
+      isMobile: true,
+      locale: 'zh-TW',
+    });
+    try {
+      const page = await context.newPage();
+      await page.goto(paths.landing, { waitUntil: 'networkidle' });
+      await page.locator('[data-menu-toggle]').tap();
+      await page.locator('#site-navigation a[href="#projects"]').tap();
+      const filters = page.locator('#project-filters [data-filter]');
+      if ((await filters.count()) > 1) await filters.nth(1).tap();
+      await page.locator('[data-project-open]').first().tap();
+      await expect(page.locator('#project-dialog')).toBeVisible();
+      await page.locator('#project-dialog [data-dialog-close]').first().tap();
+
+      const phone = page.getByLabel('聯絡電話');
+      await phone.scrollIntoViewIfNeeded();
+      await phone.tap();
+      await page.setViewportSize({ width: 390, height: 500 });
+      await page.waitForTimeout(300);
+      await phone.scrollIntoViewIfNeeded();
+      const phoneBox = await phone.boundingBox();
+      expect(phoneBox?.y || -1).toBeGreaterThanOrEqual(0);
+      expect((phoneBox?.y || 0) + (phoneBox?.height || 0)).toBeLessThanOrEqual(500);
+      await expect(page.locator('[data-mobile-dock]')).toHaveCSS('opacity', '0');
+      await phone.fill('0912345678');
+      await expect(phone).toHaveValue('0912345678');
+    } finally {
+      await context.close();
+    }
   });
 
   test('landing page keeps its ledger layout at tablet and desktop widths', async ({ page }) => {

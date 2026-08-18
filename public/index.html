@@ -105,10 +105,11 @@
           <div class="landing-section-note"><p>公開頁只顯示匿名產業摘要。公司、條件、財務與完整報告，須完成會員確認及逐案授權後查看。</p><a href="/activate.html">申請會員權限 <b aria-hidden="true">→</b></a></div>
         </div>
         <div class="notice" id="project-source" hidden></div>
-        <div class="filter-row landing-filter-row" id="project-filters" aria-label="依產業篩選">
+        <div class="filter-row landing-filter-row" id="project-filters" role="group" aria-label="依產業篩選">
           <button class="filter-chip" type="button" aria-pressed="true" data-filter="all">全部研究</button>
         </div>
-        <div class="project-grid landing-project-grid" id="project-grid" aria-live="polite">
+        <p class="landing-swipe-hint" id="project-swipe-hint"><span>Swipe</span>左右滑動查看更多研究 <b aria-hidden="true">→</b></p>
+        <div class="project-grid landing-project-grid" id="project-grid" role="region" aria-label="募資研究輪播" aria-describedby="project-swipe-hint" aria-live="polite" tabindex="0">
           <div class="loading-state" style="grid-column:1/-1"><div><p>正在整理研究索引</p><div class="loading-line"></div></div></div>
         </div>
       </div>
@@ -120,7 +121,8 @@
           <span>Information sharing</span>
           <h2 id="insights-title">把資訊，整理成能夠追問的問題</h2>
         </div>
-        <div class="landing-story-grid">
+        <p class="landing-swipe-hint landing-swipe-hint--light" id="story-swipe-hint"><span>Swipe</span>左右滑動查看更多主題 <b aria-hidden="true">→</b></p>
+        <div class="landing-story-grid" role="region" aria-label="資訊分享主題輪播" aria-describedby="story-swipe-hint" tabindex="0">
           <article class="landing-story landing-story--feature"><span>產業拆解 · 03:40</span><h3>先看市場，不急著看標的：生技授權的三個判讀節點</h3><p>示意內容｜從市場規模、法規路徑與授權節點建立研究問題。</p><a href="#advisory" data-scroll-to aria-label="前往預約顧問討論生技授權研究">討論這個主題 →</a></article>
           <article class="landing-story"><span>研究方法 · 02:15</span><h3>AI 報告怎麼讀，才不會把推論當事實？</h3><p>示意內容｜區分資料、假設與專家審閱責任。</p><a href="#advisory" data-scroll-to aria-label="前往預約顧問討論 AI 報告">討論這個主題 →</a></article>
           <article class="landing-story"><span>流程說明 · 01:50</span><h3>從會員啟用到認購意向，資料如何被確認</h3><p>示意內容｜了解身分、資格、專案與流程紀錄的邊界。</p><a href="/activate.html">開始會員啟用 →</a></article>
@@ -171,13 +173,18 @@
     </section>
   </main>
 
+  <aside class="landing-mobile-dock" aria-label="手機會員快捷操作" data-mobile-dock>
+    <span><small>Member access</small>從 LINE 啟用會員</span>
+    <a href="/activate.html" data-testid="line-add-friend">開啟 LINE <b aria-hidden="true">→</b></a>
+  </aside>
+
   <footer class="site-footer landing-footer">
     <div class="landing-container landing-footer__top">
       <div><a class="brand landing-brand" href="/" aria-label="致富投資首頁"><span class="landing-brand__mark" aria-hidden="true"><i></i><i></i><i></i></span><span class="brand__text"><span class="brand__name">致富投資</span><span class="brand__descriptor">Zhifu Investment</span></span></a><p>研究先行、權限清楚、流程留痕的會員服務平台。</p></div>
       <nav aria-label="頁尾導覽"><a href="#about" data-scroll-to>認識平台</a><a href="#projects" data-scroll-to>募資研究</a><a href="#insights" data-scroll-to>資訊分享</a><a href="#advisory" data-scroll-to>聯絡我們</a></nav>
     </div>
     <div class="landing-container landing-footer__middle">
-      <div><h3>法律與安全</h3><nav class="footer__links"><a href="/risk.html">投資風險與防詐聲明</a><a href="/privacy.html">隱私權政策草案</a><a href="/terms.html">會員服務條款草案</a></nav></div>
+      <div><h3 id="footer-legal-title">法律與安全</h3><nav class="footer__links" aria-labelledby="footer-legal-title"><a href="/risk.html">投資風險與防詐聲明</a><a href="/privacy.html">隱私權政策草案</a><a href="/terms.html">會員服務條款草案</a></nav></div>
       <div data-demo-access><h3>Demo access</h3><div class="footer__links"><button class="button button--small button--paper" type="button" data-demo-login="member" data-member-id="member-001" data-testid="demo-login-member-a">Demo 會員 A</button><button class="button button--small button--paper" type="button" data-demo-login="member" data-member-id="member-002" data-testid="demo-login-member-b">Demo 會員 B</button><button class="button button--small button--paper" type="button" data-demo-login="admin" data-testid="demo-login-admin">引薦人 Demo 後台</button></div></div>
     </div>
     <div class="landing-container landing-footer__legal">平台品牌：致富投資｜power by 奇華智能投資顧問股份有限公司｜平台營運、持牌投顧及資格審核主體：正式發布前確認</div>

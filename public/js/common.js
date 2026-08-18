@@ -136,10 +136,43 @@ export function initShell() {
 
   const menuButton = document.querySelector('[data-menu-toggle]');
   const menu = document.querySelector('[data-mobile-menu]');
+  const menuFocusable = () => [
+    menuButton,
+    ...(menu ? menu.querySelectorAll('a[href], button:not([disabled])') : []),
+  ].filter(Boolean);
+  const setMenuOpen = (open, { restoreFocus = false } = {}) => {
+    menuButton?.setAttribute('aria-expanded', String(open));
+    menuButton?.setAttribute('aria-label', open ? '關閉選單' : '開啟選單');
+    menu?.toggleAttribute('data-open', open);
+    document.documentElement.toggleAttribute('data-menu-open', open);
+    if (open) window.requestAnimationFrame(() => menuFocusable()[1]?.focus());
+    if (!open && restoreFocus) menuButton?.focus();
+  };
   menuButton?.addEventListener('click', () => {
     const open = menuButton.getAttribute('aria-expanded') === 'true';
-    menuButton.setAttribute('aria-expanded', String(!open));
-    menu?.toggleAttribute('data-open', !open);
+    setMenuOpen(!open);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (menuButton?.getAttribute('aria-expanded') !== 'true') return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setMenuOpen(false, { restoreFocus: true });
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = menuFocusable();
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  });
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 760) setMenuOpen(false);
   });
 
   document.querySelectorAll('[data-scroll-to]').forEach((link) => {
@@ -150,9 +183,47 @@ export function initShell() {
       if (!target) return;
       event.preventDefault();
       target.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-      menuButton?.setAttribute('aria-expanded', 'false');
-      menu?.removeAttribute('data-open');
+      setMenuOpen(false);
     });
+  });
+
+  document.querySelectorAll('[aria-describedby$="swipe-hint"][tabindex="0"]').forEach((rail) => {
+    rail.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      event.preventDefault();
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      rail.scrollBy({
+        left: direction * Math.min(360, rail.clientWidth * 0.86),
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      });
+    });
+  });
+
+  const mobileDock = document.querySelector('[data-mobile-dock]');
+  const footer = document.querySelector('.site-footer');
+  if (mobileDock) {
+    let dockFrame = 0;
+    const updateDock = () => {
+      dockFrame = 0;
+      const afterHero = window.scrollY > Math.min(520, window.innerHeight * 0.7);
+      const beforeFooter = !footer || footer.getBoundingClientRect().top > window.innerHeight - 72;
+      mobileDock.toggleAttribute('data-visible', window.innerWidth <= 760 && afterHero && beforeFooter);
+    };
+    const scheduleDockUpdate = () => {
+      if (!dockFrame) dockFrame = window.requestAnimationFrame(updateDock);
+    };
+    window.addEventListener('scroll', scheduleDockUpdate, { passive: true });
+    window.addEventListener('resize', scheduleDockUpdate);
+    updateDock();
+  }
+
+  const mobileForm = document.querySelector('.landing-form');
+  mobileForm?.addEventListener('focusin', (event) => {
+    const control = event.target.closest('input, select, textarea');
+    if (!control || window.innerWidth > 760) return;
+    window.setTimeout(() => {
+      if (document.activeElement === control) control.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }, 220);
   });
 
   document.querySelectorAll('[data-demo-login]').forEach((button) => {

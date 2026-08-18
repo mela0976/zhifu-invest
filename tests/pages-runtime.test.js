@@ -185,9 +185,14 @@ test('Pages build injects runtime config before every module and rewrites API li
   assert.match(index, /href="\/zhifu-invest\/assets\/landing\.css"/);
   assert.match(index, /src="\/zhifu-invest\/assets\/images\/landing-hero\.webp"/);
   assert.match(index, /src="\/zhifu-invest\/assets\/images\/landing-research\.webp"/);
+  assert.match(index, /class="landing-mobile-dock"/);
+  assert.match(index, /href="\/zhifu-invest\/activate\.html"[^>]*data-testid="line-add-friend"/);
+  assert.match(index, /左右滑動查看更多研究/);
 
   const landingCss = await readFile(join(directory, 'assets', 'landing.css'), 'utf8');
   assert.match(landingCss, /\.landing-page/);
+  assert.match(landingCss, /safe-area-inset-bottom/);
+  assert.match(landingCss, /\.landing-mobile-dock\[data-visible\]/);
   assert.doesNotMatch(landingCss, /#0e3252|#19d2bb/i);
   assert.ok((await readFile(join(directory, 'assets', 'images', 'landing-hero.webp'))).byteLength > 40_000);
   assert.ok((await readFile(join(directory, 'assets', 'images', 'landing-research.webp'))).byteLength > 40_000);
