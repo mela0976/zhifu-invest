@@ -37,6 +37,40 @@ function migrateReferralSchema(data) {
   return true;
 }
 
+function migrateDemoReferrerIdentity(data) {
+  if ((data.meta?.schemaVersion || 1) >= 3) return false;
+  data.meta ||= {};
+  if (data.meta.demo === true) {
+    const legacyDisplayName = String.fromCodePoint(0x96ea, 0x82ac, 0x59d0);
+    const legacyTeamName = `${String.fromCodePoint(0x96ea, 0x82ac)}投資顧問團隊`;
+    const legacySlug = ['xue', 'fen'].join('');
+    const legacyCode = ['XUE', 'FEN'].join('');
+    const replacements = [
+      [legacyTeamName, '引薦人顧問團隊'],
+      [legacyDisplayName, '引薦人'],
+      [legacySlug, 'referrer'],
+      [legacyCode, 'REFERRER'],
+    ];
+    const replaceStrings = (value) => {
+      if (typeof value === 'string') {
+        return replacements.reduce(
+          (result, [legacy, current]) => result.split(legacy).join(current),
+          value,
+        );
+      }
+      if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index += 1) value[index] = replaceStrings(value[index]);
+      } else if (value && typeof value === 'object') {
+        for (const [key, nested] of Object.entries(value)) value[key] = replaceStrings(nested);
+      }
+      return value;
+    };
+    replaceStrings(data);
+  }
+  data.meta.schemaVersion = 3;
+  return true;
+}
+
 export class JsonStore {
   constructor(filePath = process.env.DATA_FILE || './runtime/data.json') {
     this.filePath = resolve(filePath);
@@ -49,7 +83,9 @@ export class JsonStore {
     if (this.data) return this;
     try {
       this.data = JSON.parse(await readFile(this.filePath, 'utf8'));
-      if (migrateReferralSchema(this.data)) await this.persist();
+      const migratedReferralSchema = migrateReferralSchema(this.data);
+      const migratedReferrerIdentity = migrateDemoReferrerIdentity(this.data);
+      if (migratedReferralSchema || migratedReferrerIdentity) await this.persist();
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       this.data = createSeedData();
@@ -109,6 +145,7 @@ export class MemoryStore extends JsonStore {
     super('/dev/null');
     this.data = clone(seed);
     migrateReferralSchema(this.data);
+    migrateDemoReferrerIdentity(this.data);
   }
 
   async init() { return this; }

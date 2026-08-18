@@ -97,7 +97,7 @@ document.querySelector('#booking-form')?.addEventListener('submit', async (event
   try {
     await api.createBooking(Object.fromEntries(new FormData(form)));
     form.reset();
-    toast('預約需求已送出，雪芬姐確認後會通知你。');
+    toast('預約需求已送出，引薦人確認後會通知你。');
   } catch (error) {
     toast(`預約未送出：${error.message}`, 'error');
   } finally {

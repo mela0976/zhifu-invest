@@ -30,7 +30,7 @@
     </form>
   </section>
   <header>
-    <div><h1>致富投資｜營運儀表板</h1><small>雪芬姐營運專區・Google allowlist + TOTP 保護</small></div>
+    <div><h1>致富投資｜營運儀表板</h1><small>引薦人營運專區・Google allowlist + TOTP 保護</small></div>
     <div class="header-actions"><small id="adminIdentity"></small><button class="secondary" onclick="loadDashboard()">重新整理</button><button class="secondary" onclick="logoutAdmin()">登出</button></div>
   </header>
   <main>
@@ -147,7 +147,7 @@
     }
     function editSubscription(id){const record=state.subscriptions.get(id);if(!record)return;const dialog=document.querySelector('#subscriptionDialog');const form=dialog.querySelector('form');for(const [key,value] of Object.entries(record))if(form.elements[key])form.elements[key].value=value??'';if(record.partnerApproval){form.elements.partnerApprover.value=record.partnerApproval.approver;form.elements.partnerApprovedAt.value=String(record.partnerApproval.approvedAt).slice(0,16);form.elements.partnerReference.value=record.partnerApproval.reference}dialog.showModal()}
     async function saveSubscription(event){event.preventDefault();const values=new FormData(event.currentTarget);try{let approval;if(values.get('partnerReference')){if(!values.get('partnerApprover')||!values.get('partnerApprovedAt'))throw new Error('填寫核准編號時，合作機構核准人與日期也必填。');approval={approver:values.get('partnerApprover'),approvedAt:new Date(values.get('partnerApprovedAt')).toISOString(),reference:values.get('partnerReference')}}const patch={subscriptionState:values.get('subscriptionState'),approvedAmountTwd:Number(values.get('approvedAmountTwd')),receivedAmountTwd:Number(values.get('receivedAmountTwd')),allocatedAmountTwd:Number(values.get('allocatedAmountTwd')),refundedAmountTwd:Number(values.get('refundedAmountTwd'))};if(approval)patch.partnerApproval=approval;await rpc('adminPatchSubscription',{subscriptionId:values.get('subscriptionId'),patch,reason:values.get('reason')});document.querySelector('#subscriptionDialog').close();await loadDashboard()}catch(error){setStatus(error.message,true)}}
-    async function approveNotification(id){try{await rpc('adminApproveNotification',{notificationId:id,reason:'雪芬姐後台人工核准'});await listResource('notifications')}catch(error){setStatus(error.message,true)}}
+    async function approveNotification(id){try{await rpc('adminApproveNotification',{notificationId:id,reason:'引薦人後台人工核准'});await listResource('notifications')}catch(error){setStatus(error.message,true)}}
     function latestActivation(memberId){return state.activations.filter(record=>record.memberId===memberId).sort((left,right)=>String(right.createdAt).localeCompare(String(left.createdAt)))[0]||null}
     function editMember(id){
       const record=state.members.get(id);if(!record)return;
@@ -200,7 +200,7 @@
       event.preventDefault();const values=new FormData(event.currentTarget);
       try{await rpc('adminPatchCommission',{subscriptionId:values.get('subscriptionId'),action:values.get('action'),approvalReference:values.get('approvalReference')||undefined,payoutReference:values.get('payoutReference')||undefined,voidReason:values.get('voidReason')||undefined,reason:values.get('reason')});document.querySelector('#commissionDialog').close();await loadDashboard();await listResource('commissions')}catch(error){setStatus(error.message,true)}
     }
-    async function exportResource(resource){try{const data=await rpc('adminExport',{resource,reason:'雪芬姐後台手動匯出'});const url=URL.createObjectURL(new Blob([data.csv],{type:data.mimeType}));const anchor=Object.assign(document.createElement('a'),{href:url,download:data.filename});anchor.click();URL.revokeObjectURL(url)}catch(error){setStatus(error.message,true)}}
+    async function exportResource(resource){try{const data=await rpc('adminExport',{resource,reason:'引薦人後台手動匯出'});const url=URL.createObjectURL(new Blob([data.csv],{type:data.mimeType}));const anchor=Object.assign(document.createElement('a'),{href:url,download:data.filename});anchor.click();URL.revokeObjectURL(url)}catch(error){setStatus(error.message,true)}}
     bootstrap();
   </script>
 </body>

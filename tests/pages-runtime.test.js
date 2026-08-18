@@ -58,12 +58,12 @@ test('runtime mode fails closed and Pages navigation keeps the repository base',
 
 test('activation links normalize community source query parameters', () => {
   assert.deepEqual(
-    activationSourceFromUrl('?sourceCode=SF-NORTH&sourceName=%E5%8C%97%E5%8D%80OpenChat'),
-    { sourceCode: 'SF-NORTH', sourceName: '北區OpenChat' },
+    activationSourceFromUrl('?sourceCode=REFERRER-NORTH&sourceName=%E5%8C%97%E5%8D%80OpenChat'),
+    { sourceCode: 'REFERRER-NORTH', sourceName: '北區OpenChat' },
   );
   assert.deepEqual(
-    activationSourceFromUrl('?sc=%20GROUP-7%00%20&openChat=%20%E9%9B%AA%E8%8A%AC%E5%A7%90%E7%A4%BE%E7%BE%A4%20'),
-    { sourceCode: 'GROUP-7', sourceName: '雪芬姐社群' },
+    activationSourceFromUrl('?sc=%20GROUP-7%00%20&openChat=%20%E5%BC%95%E8%96%A6%E4%BA%BA%E7%A4%BE%E7%BE%A4%20'),
+    { sourceCode: 'GROUP-7', sourceName: '引薦人社群' },
   );
 });
 

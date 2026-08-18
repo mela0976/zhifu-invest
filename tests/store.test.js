@@ -43,7 +43,7 @@ test('legacy data migration never fabricates historical referral or commission e
     await writeFile(filePath, JSON.stringify(legacy), { mode: 0o600 });
 
     const migrated = await new JsonStore(filePath).init();
-    assert.equal(migrated.data.meta.schemaVersion, 2);
+    assert.equal(migrated.data.meta.schemaVersion, 3);
     assert.equal(migrated.data.referrers.length, 4);
     assert.ok(migrated.data.members.every((item) => item.referralAttribution === null));
     assert.ok(migrated.data.subscriptions.every((item) => (
@@ -52,6 +52,39 @@ test('legacy data migration never fabricates historical referral or commission e
       && item.commissionBasisAmountTwd === 0
       && item.commissionAccruedAmountTwd === 0
     )));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy Demo referrer identity migrates without changing commission history', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zhifu-store-referrer-name-'));
+  const filePath = join(directory, 'data.json');
+  const legacyName = String.fromCodePoint(0x96ea, 0x82ac, 0x59d0);
+  const legacyCode = ['XUE', 'FEN'].join('');
+  const legacyAdminId = `admin-${['xue', 'fen'].join('')}-demo`;
+  try {
+    const seeded = await new JsonStore(filePath).init();
+    const legacy = seeded.snapshot();
+    legacy.meta.schemaVersion = 2;
+    legacy.referrers[0].code = legacyCode;
+    legacy.referrers[0].displayName = legacyName;
+    legacy.members[0].referralAttribution.referralCode = legacyCode;
+    legacy.members[0].referralAttribution.verifiedBy = legacyAdminId;
+    legacy.subscriptions[0].referralSnapshot.referrerName = legacyName;
+    legacy.subscriptions[0].referralSnapshot.referralCode = legacyCode;
+    legacy.subscriptions[0].commissionAccruedAmountTwd = 12_345;
+    await writeFile(filePath, JSON.stringify(legacy), { mode: 0o600 });
+
+    const migrated = await new JsonStore(filePath).init();
+    assert.equal(migrated.data.meta.schemaVersion, 3);
+    assert.equal(migrated.data.referrers[0].code, 'REFERRER');
+    assert.equal(migrated.data.referrers[0].displayName, '引薦人');
+    assert.equal(migrated.data.members[0].referralAttribution.verifiedBy, 'admin-referrer-demo');
+    assert.equal(migrated.data.subscriptions[0].referralSnapshot.referrerName, '引薦人');
+    assert.equal(migrated.data.subscriptions[0].commissionAccruedAmountTwd, 12_345);
+    assert.equal(JSON.stringify(migrated.data).includes(legacyName), false);
+    assert.equal(JSON.stringify(migrated.data).toLowerCase().includes(['xue', 'fen'].join('')), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

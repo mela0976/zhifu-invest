@@ -245,7 +245,7 @@ document.querySelector('#subscription-form').addEventListener('submit', async (e
   setButtonBusy(button, true, '正在送出…');
   try {
     const created = await api.createSubscription({ projectId: selectedProject.id, requestedAmountTwd: requestedAmount, riskAcknowledged: true }, submissionKey);
-    document.querySelector('#subscription-result').innerHTML = '<div class="notice" style="margin-top:18px"><strong>認購意向已送出</strong>｜目前狀態：待雪芬姐確認</div>';
+    document.querySelector('#subscription-result').innerHTML = '<div class="notice" style="margin-top:18px"><strong>認購意向已送出</strong>｜目前狀態：待引薦人確認</div>';
     toast('認購意向已送出；這不是付款或契約。');
     const newRecord = created?.subscription || created;
     if (newRecord?.id) subscriptionDialog.dataset.createdRecordId = newRecord.id;

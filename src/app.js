@@ -266,7 +266,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     deliver: (id) => deliverNotification(id, { type: 'system', id: 'notification-worker' }),
   });
   const operationsRecipient = {
-    id: 'operations-xuefen',
+    id: 'operations-referrer',
     lineUserId: env.LINE_OPERATIONS_USER_ID || (line.demoMode ? 'demo-line-operations' : ''),
   };
   const complianceRecipient = {
@@ -347,8 +347,8 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     let payload;
     let subject;
     if (role === ADMIN_ROLE) {
-      payload = { role, adminId: 'admin-xuefen-demo' };
-      subject = { id: 'admin-xuefen-demo', displayName: '雪芬姐 DEMO', role };
+      payload = { role, adminId: 'admin-referrer-demo' };
+      subject = { id: 'admin-referrer-demo', displayName: '引薦人 DEMO', role };
     } else {
       const member = data.members.find((item) => item.id === (body.memberId || 'member-001'));
       if (!member) return error(c, 404, 'member_not_found', 'Demo member was not found');

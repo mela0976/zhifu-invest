@@ -81,9 +81,9 @@ Cloudflare 建議新 Worker 使用目前 compatibility date、生成 binding typ
 2. 執行一次 `setupWorkbook()`，設定 `GATEWAY_SHARED_SECRET`、`LINE_MESSAGING_ACCESS_TOKEN`、`MEMBER_APP_BASE_URL`、至少兩人的 `ADMIN_EMAILS` 與每人不同的 `ADMIN_TOTP_SECRETS_JSON`。
 3. 在同一 project 建立 Gateway 固定版本 deployment：`USER_DEPLOYING`／`ANYONE_ANONYMOUS`。URL 只交給 Worker，所有請求仍須通過 signed envelope。
 4. 由同一 project 的另一個固定版本建立 Admin deployment：`USER_ACCESSING`／`ANYONE`。不要使用 Head deployment；兩個 entry point 共享 ScriptLock、nonce、TOTP replay counter、Sheet 與 audit。
-5. 雪芬姐與備援管理員先通過 Google `ADMIN_EMAILS`，再輸入自有 TOTP；8 小時後台 session 的原始 token 只在該分頁的 `sessionStorage`，伺服器只存雜湊與期限。Google 帳號本身也必須開啟兩步驟驗證。
+5. 引薦人與備援管理員先通過 Google `ADMIN_EMAILS`，再輸入自有 TOTP；8 小時後台 session 的原始 token 只在該分頁的 `sessionStorage`，伺服器只存雜湊與期限。Google 帳號本身也必須開啟兩步驟驗證。
 6. 執行 `productionPreflight()`，確認兩名管理員、每人 TOTP、gateway secret 與 spreadsheet 設定均存在；安裝唯一一個 `processNotificationQueue` 5 分鐘 trigger。
-7. GitHub Pages 的 `admin.html` 僅供本機 Demo；正式雪芬姐儀表板由 Worker 的 `ADMIN_DASHBOARD_URL` 導向 Admin Apps Script `/exec`。
+7. GitHub Pages 的 `admin.html` 僅供本機 Demo；正式引薦人儀表板由 Worker 的 `ADMIN_DASHBOARD_URL` 導向 Admin Apps Script `/exec`。
 8. 執行 `migrateReferralCommissionSchema()`，建立 Referrers sheet 及會員／認購的歸因與分潤欄位；舊認購不得推測或回填歷史引薦證據。
 9. production 不執行 `seedDemoData()`；完整 deployment 操作與 manifest 切換方式見 `apps-script/README.md`。
 
@@ -120,7 +120,7 @@ Pages build 只把這個公開 API origin 寫入 `runtime-config.js`。沒有設
 
 - LINE iOS、LINE Android：首次登入、已授權、拒絕、取消、回訪、封鎖／解除封鎖 OA。
 - Safari iOS／macOS、Chrome Android／Desktop、Edge：callback、cookie、deep link 回原頁、私密模式與網路錯誤。
-- 一般群組與 OpenChat 導流：自助登入、加 OA、提交來源、雪芬姐人工確認；不得宣稱自動匯入群組名單。
+- 一般群組與 OpenChat 導流：自助登入、加 OA、提交來源、引薦人人工確認；不得宣稱自動匯入群組名單。
 - 兩位會員平行登入：專案、認購、文件與金額互不可見。
 - 兩位管理員：Google allowlist、各自 TOTP、錯誤鎖定、登出與 8 小時到期；任何一人不得共用另一人的 TOTP。
 - 合格投資人＋逐案 allowlist：未通過任一層不得取得保護 payload 或 R2 key。

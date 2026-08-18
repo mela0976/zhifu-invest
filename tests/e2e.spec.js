@@ -23,7 +23,7 @@ const demoActors = {
   },
   admin: {
     testId: 'demo-login-admin',
-    name: /雪芬姐|營運管理|管理員|Admin/i,
+    name: /引薦人|營運管理|管理員|Admin/i,
     shellTestId: 'admin-dashboard',
     shellName: /營運儀表板|管理後台|Dashboard/i,
   },
@@ -189,13 +189,13 @@ test.describe('致富投資 mobile and role journeys', () => {
     await page.getByLabel('想先討論的事').fill('DEMO：驗證公開顧問預約流程。');
     await page.locator('#booking-form input[name="consent"]').check();
     await page.getByRole('button', { name: '送出預約需求' }).click();
-    await expect(page.getByText('預約需求已送出，雪芬姐確認後會通知你。')).toBeVisible();
+    await expect(page.getByText('預約需求已送出，引薦人確認後會通知你。')).toBeVisible();
   });
 
   test('community activation link prefills source tracking fields', async ({ page }) => {
-    await page.goto(`${paths.activate}?sourceCode=SF-NORTH&sourceName=${encodeURIComponent('雪芬姐北區 OpenChat')}`, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('#activation-code')).toHaveValue('SF-NORTH');
-    await expect(page.locator('#activation-source')).toHaveValue('雪芬姐北區 OpenChat');
+    await page.goto(`${paths.activate}?sourceCode=REFERRER-NORTH&sourceName=${encodeURIComponent('引薦人北區 OpenChat')}`, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#activation-code')).toHaveValue('REFERRER-NORTH');
+    await expect(page.locator('#activation-source')).toHaveValue('引薦人北區 OpenChat');
   });
 
   test('two demo members receive isolated private records', async ({ baseURL, browser }) => {
@@ -226,7 +226,7 @@ test.describe('致富投資 mobile and role journeys', () => {
     }
   });
 
-  test('雪芬姐 sees dashboard KPIs and an actionable operations queue', async ({ page }) => {
+  test('引薦人 sees dashboard KPIs and an actionable operations queue', async ({ page }) => {
     await loginAs(page, 'admin');
 
     const dashboard = page
@@ -332,8 +332,12 @@ test.describe('致富投資 mobile and role journeys', () => {
       await actionable(memberPage, 'subscription-submit', /送出.*認購|提交.*申請/i).click();
       await expect(memberPage.getByTestId('subscription-status').or(memberPage.getByText(/已送出|待營運確認|submitted/i)).first()).toBeVisible();
       const memberSubscriptionsBeforeSettlement = await memberPage.evaluate(async () => (await fetch('/api/subscriptions')).json());
-      const createdSubscription = (memberSubscriptionsBeforeSettlement.data || memberSubscriptionsBeforeSettlement.subscriptions || [])
-        .find((item) => Number(item.requestedAmount ?? item.requestedAmountTwd) === Number(amount));
+      const createdSubscription = [...(memberSubscriptionsBeforeSettlement.data || memberSubscriptionsBeforeSettlement.subscriptions || [])]
+        .reverse()
+        .find((item) => (
+          Number(item.requestedAmount ?? item.requestedAmountTwd) === Number(amount)
+          && (item.subscriptionState || item.subscriptionStatus) === 'submitted'
+        ));
       expect(createdSubscription?.id).toBeTruthy();
       const subscriptionId = createdSubscription.id;
 

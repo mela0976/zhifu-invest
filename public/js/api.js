@@ -229,7 +229,7 @@ export const api = {
   demoLogin: async (role, memberId) => {
     if (isStaticPreview) {
       sessionStorageSafe()?.setItem('zhifu_static_actor', JSON.stringify({ role, memberId: memberId || null }));
-      return { role, subject: role === 'admin' ? { id: 'admin-static-demo', displayName: '雪芬姐 DEMO' } : structuredClone(demoMember) };
+      return { role, subject: role === 'admin' ? { id: 'admin-static-demo', displayName: '引薦人 DEMO' } : structuredClone(demoMember) };
     }
     const session = await request('/api/auth/demo', { method: 'POST', body: { role, ...(memberId ? { memberId } : {}) } });
     clearCsrfToken();

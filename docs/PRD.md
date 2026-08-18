@@ -2,17 +2,17 @@
 
 ## Outcome
 
-Build a mobile-first Taiwan investment-membership MVP for 雪芬姐 and other approved high-net-worth investor referral networks. The first measurable outcome is converting referral traffic into verified LINE members, advisory bookings, traceable subscription-interest operations, and evidence-backed referral commission records.
+Build a mobile-first Taiwan investment-membership MVP for 引薦人 and other approved high-net-worth investor referral networks. The first measurable outcome is converting referral traffic into verified LINE members, advisory bookings, traceable subscription-interest operations, and evidence-backed referral commission records.
 
 The product is not an online securities transaction or payment system. Contracts, qualification evidence, and money movement remain outside the MVP. The system records approval references and operational results.
 
 ## Roles
 
 - Visitor: sees public education, videos, advisors, and anonymized project teasers.
-- Member: LINE-authenticated, manually confirmed by 雪芬姐, sees only their own records.
+- Member: LINE-authenticated, manually confirmed by 引薦人, sees only their own records.
 - Qualified member: gains access only to specifically authorized projects.
 - Referrer: an approved introducer or partner whose source code may be attached to a member; the MVP does not expose investor identities, amounts, or portfolio data to this role.
-- 雪芬姐 / operations: confirms community membership, records subscription and financial milestones, operates notifications and exports.
+- 引薦人 / operations: confirms community membership, records subscription and financial milestones, operates notifications and exports.
 - Licensed partner: approves regulated content, investor qualification, and accepted amounts outside the system; operations must record the approver, date, and reference number.
 - Finance: represented as an auditable operation when actual receipt, allocation, or refund is recorded.
 
@@ -39,7 +39,7 @@ When a member submits a subscription, the system copies the verified referrer, a
 - Member home, permitted projects, project detail, report and Pitch Deck access, subscription application, personal portfolio, qualification state, appointments, settings and membership tier.
 - Mobile bottom navigation: Home, Projects, My investments, More.
 
-### 雪芬姐 dashboard
+### 引薦人 dashboard
 
 - KPI overview and action queue.
 - Member confirmation and LINE friendship state.
@@ -74,7 +74,7 @@ When a member submits a subscription, the system copies the verified referrer, a
 
 ## Visual direction
 
-深海軍藍、象牙白、低彩度香檳金，結合雪芬姐日後提供的正式人物素材。The interface should feel like a precise private-market research ledger, not a black-and-gold get-rich promotion. Typography, status stamps, ledger lines and restrained motion carry the identity.
+深海軍藍、象牙白、低彩度香檳金，結合引薦人日後提供的正式人物素材。The interface should feel like a precise private-market research ledger, not a black-and-gold get-rich promotion. Typography, status stamps, ledger lines and restrained motion carry the identity.
 
 ## Acceptance
 

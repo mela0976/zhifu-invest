@@ -112,7 +112,7 @@ test('member activation binds identity and explicit consent to the authenticated
   const unverifiedFriend = await login(app, 'member', 'member-025');
   const cookie = await login(app, 'member', 'member-026');
   const input = {
-    fullName: 'DEMO 測試姓名', phone: '0912-345-678', sourceCode: 'SF-NORTH',
+    fullName: 'DEMO 測試姓名', phone: '0912-345-678', sourceCode: 'REFERRER-NORTH',
     sourceName: 'DEMO 北區投資班', lineFriendConfirmed: true, privacyConsent: true,
   };
   const withoutConsent = await app.request('/api/activation', {
@@ -298,7 +298,7 @@ test('activation only claims a matching effective referral code and never self-v
     }),
   });
 
-  const claimed = await activation(known, 'xuefen');
+  const claimed = await activation(known, 'referrer');
   assert.equal(claimed.status, 201);
   const claimedBody = await claimed.json();
   assert.equal(claimedBody.activation.referralClaimed, true);
@@ -393,7 +393,7 @@ test('verified member attribution affects only future immutable subscription sna
   assert.equal(verified.status, 200);
   const attribution = (await verified.json()).member.referralAttribution;
   assert.equal(attribution.state, 'verified');
-  assert.equal(attribution.verifiedBy, 'admin-xuefen-demo');
+  assert.equal(attribution.verifiedBy, 'admin-referrer-demo');
   assert.equal((await app.request('/api/admin/members/member-001', {
     method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
     body: JSON.stringify({ referralAttribution: null }),
@@ -449,7 +449,7 @@ test('commission actions are server-stamped, evidence-gated, forward-only and lo
   assert.equal(approvedResponse.status, 200);
   const approved = (await approvedResponse.json()).commission;
   assert.deepEqual(approved.commissionApproval, {
-    approvedBy: 'admin-xuefen-demo', reference: 'APP-API-1', approvedAt: approved.commissionApproval.approvedAt,
+    approvedBy: 'admin-referrer-demo', reference: 'APP-API-1', approvedAt: approved.commissionApproval.approvedAt,
   });
 
   const changedAmount = accrued.requestedAmountTwd + 100_000;
@@ -473,7 +473,7 @@ test('commission actions are server-stamped, evidence-gated, forward-only and lo
     body: JSON.stringify({ action: 'pay', payoutReference: 'BANK-API-1', reason: '匯款完成' }),
   });
   assert.equal(paid.status, 200);
-  assert.equal((await paid.json()).commission.commissionPayment.paidBy, 'admin-xuefen-demo');
+  assert.equal((await paid.json()).commission.commissionPayment.paidBy, 'admin-referrer-demo');
   assert.equal((await app.request(`/api/admin/commissions/${accrued.id}`, {
     method: 'PATCH', headers: { cookie: admin, 'content-type': 'application/json' },
     body: JSON.stringify({ action: 'void', voidReason: '不應允許', reason: '嘗試作廢已付款分潤' }),

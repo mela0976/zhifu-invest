@@ -3,7 +3,7 @@ import { calculateCommissionAmount } from './domain.js';
 const INDUSTRIES = ['生技醫療', '半導體', '系統整合', '智慧製造', '綠色科技', '數位健康'];
 
 const REFERRER_DEFINITIONS = [
-  ['XUEFEN', '雪芬姐', '雪芬投資顧問團隊', '雪芬姐', 'xuefen@example.invalid', 300],
+  ['REFERRER', '引薦人', '引薦人顧問團隊', '引薦人', 'referrer@example.invalid', 300],
   ['ALPHA-CIRCLE', '高階投資人 Alpha 會', 'Alpha 資本顧問股份有限公司', '林顧問', 'alpha@example.invalid', 250],
   ['BIO-PARTNER', '生技產業夥伴網', '生技產業夥伴有限公司', '陳顧問', 'bio@example.invalid', 350],
   ['CHIP-LEADERS', '半導體領袖圈', '領芯策略顧問有限公司', '王顧問', 'chip@example.invalid', 280],
@@ -99,7 +99,7 @@ function member(index, referrers) {
       evidenceReference: referralState === 'verified' ? `DEMO-REF-${String(n).padStart(4, '0')}` : null,
       claimedAt,
       verifiedAt: referralState === 'verified' ? isoOffset(30 - index) : null,
-      verifiedBy: referralState === 'verified' ? 'admin-xuefen-demo' : null,
+      verifiedBy: referralState === 'verified' ? 'admin-referrer-demo' : null,
     },
     membershipState,
     qualificationState,
@@ -200,7 +200,7 @@ export function createSeedData() {
   const subscriptions = Array.from({ length: 25 }, (_, index) => subscription(index, members, projects, referrers));
   const now = new Date().toISOString();
   return {
-    meta: { schemaVersion: 2, demo: true, createdAt: now, updatedAt: now },
+    meta: { schemaVersion: 3, demo: true, createdAt: now, updatedAt: now },
     projects,
     referrers,
     members,

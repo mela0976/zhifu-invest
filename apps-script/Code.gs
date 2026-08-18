@@ -59,7 +59,7 @@ function doGet() {
   try {
     assertAdminIdentity_();
     return HtmlService.createTemplateFromFile('Admin').evaluate()
-      .setTitle('致富投資｜雪芬姐營運儀表板')
+      .setTitle('致富投資｜引薦人營運儀表板')
       .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DENY);
   } catch (error) {

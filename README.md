@@ -1,6 +1,6 @@
 # 致富投資
 
-Mobile-first investment membership, referral attribution, commission ledger, and subscription-operations MVP for 雪芬姐 plus approved high-net-worth investor referral networks. The local build is a real permissioned workflow with Demo identity and notification adapters; production providers can be enabled through environment variables without moving secrets into browser code.
+Mobile-first investment membership, referral attribution, commission ledger, and subscription-operations MVP for 引薦人 plus approved high-net-worth investor referral networks. The local build is a real permissioned workflow with Demo identity and notification adapters; production providers can be enabled through environment variables without moving secrets into browser code.
 
 > Demo content is fictional and is not an offer, solicitation, investment recommendation, or record of real performance.
 
@@ -74,7 +74,7 @@ flowchart LR
     Gateway --> R2["Protected Pitch Decks in R2"]
     Gateway --> Ops["Apps Script operations service"]
     Ops --> Sheets["Google Sheets operational store"]
-    Admin["雪芬姐 / operations Google-auth dashboard"] --> Ops
+    Admin["引薦人 / operations Google-auth dashboard"] --> Ops
 ```
 
 The Docker build runs these boundaries in one Node process for local acceptance. Integration modules keep identity, notification, storage, and document delivery replaceable.

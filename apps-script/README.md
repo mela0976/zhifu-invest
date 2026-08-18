@@ -1,7 +1,7 @@
 # 致富投資 Apps Script／Google Sheets 營運套件
 
 此目錄是正式架構中的營運資料層：Cloudflare Worker 透過簽名 `doPost`
-存取 Sheets；雪芬姐使用 HtmlService 後台。它不在前端保存 secret，也不把
+存取 Sheets；引薦人使用 HtmlService 後台。它不在前端保存 secret，也不把
 Sheets 直接公開給瀏覽器。
 
 ## 1. 建立與初始化
@@ -178,7 +178,7 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 - protected project 只有 active + qualification approved + member projectAccess 或 project
   memberAllowlist 且資格未過期才返回；visitor/member 無權時不回傳 company、amount、reports、deck。
 - 啟用申請保存 sourceCode、sourceName、consentedAt 與當時伺服器已驗證的 LINE friendship evidence；
-  後台會一併顯示，讓雪芬姐確認來源與同意證據。
+  後台會一併顯示，讓引薦人確認來源與同意證據。
 - `sourceCode` 只有在對應 `active` 且生效中的 Referrer 時，才建立單一
   `Members.referralAttributionJson` claimed object；未知、disabled 或過期 code 不建立 claim，也不會清除既有 verified 歸因。
   管理員必須以 `{referrerId,evidenceReference}` 提供證據，才可把歸因設為 `verified`。
