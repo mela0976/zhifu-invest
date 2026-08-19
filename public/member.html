@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fffefa">
+  <meta name="description" content="致富投資會員中心：查看專案權限、認購五種金額、狀態時間軸與資格紀錄。">
+  <title>會員中心｜致富投資</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body class="portal-body has-bottom-nav">
+  <a class="skip-link" href="#main">跳至會員內容</a>
+  <div class="demo-strip">LOCAL DEMO｜會員僅能查看自己的示意紀錄</div>
+  <header class="portal-header">
+    <div class="container portal-header__inner">
+      <a class="brand" href="/"><span class="brand__seal" aria-hidden="true">致</span><span class="brand__text"><span class="brand__name">會員中心</span><span class="brand__descriptor">Personal ledger</span></span></a>
+      <div class="portal-header__actions">
+        <a class="button button--quiet button--small" href="/risk.html">風險與防詐</a>
+        <div class="identity-chip"><span class="identity-chip__mark" id="header-initial" aria-hidden="true">會</span><span class="identity-chip__text"><strong id="header-name">會員</strong><small>LINE 已連結</small></span></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="portal-main" id="main" data-testid="member-home">
+    <div class="container">
+      <div class="notice" id="member-source" hidden></div>
+      <nav class="portal-desktop-nav filter-row" aria-label="會員中心功能">
+        <a class="filter-chip" href="#home" data-nav-view="home" aria-current="page">首頁</a>
+        <a class="filter-chip" href="#projects" data-nav-view="projects" data-testid="nav-projects">募資案</a>
+        <a class="filter-chip" href="#investments" data-nav-view="investments">我的投資</a>
+        <a class="filter-chip" href="#more" data-nav-view="more">更多服務</a>
+      </nav>
+      <section data-member-view="home" aria-labelledby="home-title">
+        <div class="portal-title"><div><p class="eyebrow">Personal register</p><h1 id="home-title">你的投資紀錄，<br>每一步都分開看。</h1></div><p>這裡只呈現平台已登錄的作業結果；契約、資格證明與金流均由站外流程完成。</p></div>
+        <section class="today-digest" id="today-digest" aria-labelledby="today-digest-title" data-testid="member-digest">
+          <div class="today-digest__head"><div><p class="eyebrow">Today / personal brief</p><h2 id="today-digest-title">今日投資摘要</h2><p id="digest-headline">正在整理今天與你相關的更新。</p></div><span class="status status--success">站內固定提供</span></div>
+          <div class="digest-amounts" id="digest-amounts" aria-label="五種金額進度"><div class="loading-line"></div></div>
+          <div class="digest-columns"><section aria-labelledby="digest-content-title"><div class="digest-section-head"><h3 id="digest-content-title">新內容與影音</h3><span>已發布</span></div><div class="digest-feed" id="digest-content-feed"><div class="loading-line"></div></div></section><section aria-labelledby="digest-matches-title"><div class="digest-section-head"><h3 id="digest-matches-title">推薦專案</h3><span>依你的權限</span></div><div class="digest-feed" id="digest-match-feed"><div class="loading-line"></div></div></section></div>
+        </section>
+        <div class="dashboard-grid">
+          <div class="stack">
+            <section class="panel">
+              <div class="panel__head"><h2>近期認購摘要</h2><button class="button button--quiet button--small" type="button" data-go-view="investments">查看全部</button></div>
+              <div class="panel__body" id="home-subscription"><div class="loading-state"><div><p>正在讀取你的紀錄</p><div class="loading-line"></div></div></div></div>
+            </section>
+            <section class="panel">
+              <div class="panel__head"><h2>你可查看的募資研究</h2><button class="button button--quiet button--small" type="button" data-go-view="projects">瀏覽全部</button></div>
+              <div class="panel__body"><div class="project-grid" id="home-projects"><div class="loading-state" style="grid-column:1/-1"><div class="loading-line"></div></div></div></div>
+            </section>
+          </div>
+          <aside class="stack">
+            <section class="identity-card" data-member-id="M-——" data-testid="member-identity" id="member-identity"><div class="identity-card__top"><span class="mono micro" style="color:#c4cdd3">MEMBER CREDENTIAL</span><span class="status status--success">LINE 已連結</span></div><h2>讀取中</h2><p>正在確認會員身分…</p><div class="identity-card__meta"><div><span>會員方案</span><strong>—</strong></div><div><span>會員編號</span><strong>—</strong></div></div></section>
+            <section class="qualification" id="qualification"><div class="loading-state"><div class="loading-line"></div></div></section>
+            <section class="panel"><div class="panel__head"><h3>需要協助？</h3></div><div class="panel__body"><p class="micro">若金額或狀態與站外文件不一致，請不要再次送出申請，先聯絡引薦人確認。</p><a class="button button--line button--wide" href="/#advisory">預約顧問</a></div></section>
+          </aside>
+        </div>
+      </section>
+
+      <section data-member-view="projects" aria-labelledby="member-projects-title" hidden>
+        <div class="portal-title"><div><p class="eyebrow">Permitted projects</p><h1 id="member-projects-title">募資研究</h1></div><p>只有獲得逐案授權的專案會顯示完整資訊；Demo 顯示六種流程狀態。</p></div>
+        <div class="filter-row" id="member-project-filters"><button class="filter-chip" type="button" aria-pressed="true" data-filter="all">全部</button></div>
+        <div class="project-grid" id="member-project-grid"><div class="loading-state" style="grid-column:1/-1"><div class="loading-line"></div></div></div>
+      </section>
+
+      <section data-member-view="investments" aria-labelledby="investments-title" hidden>
+        <div class="portal-title"><div><p class="eyebrow">Five-amount ledger</p><h1 id="investments-title">我的投資</h1></div><p>金額按流程分開呈現，不把申請意向誤當成已完成投資。</p></div>
+        <div class="amount-ledger" id="portfolio-totals" aria-label="五種金額總覽"></div>
+        <div class="record-list" id="subscription-list" style="margin-top:18px"><div class="loading-state"><div class="loading-line"></div></div></div>
+      </section>
+
+      <section data-member-view="more" aria-labelledby="more-title" hidden>
+        <div class="portal-title"><div><p class="eyebrow">Account & service</p><h1 id="more-title">更多服務</h1></div></div>
+        <div class="dashboard-grid">
+          <div class="stack">
+            <section class="panel"><div class="panel__head"><h2>會員方案</h2><span class="status status--success" id="tier-status">專業會員</span></div><div class="panel__body"><h3>目前方案由營運人工設定</h3><p class="micro">第一版不在網站刷卡或自動續訂。方案價格與啟用結果會由引薦人另行確認。</p><div class="trust-ledger" style="grid-template-columns:repeat(3,1fr)"><div class="trust-ledger__item"><span class="trust-ledger__number">FREE</span><h3>一般會員</h3><p>市場內容與資格申請</p></div><div class="trust-ledger__item"><span class="trust-ledger__number">PRO</span><h3>專業會員</h3><p>會員研究與顧問服務</p></div><div class="trust-ledger__item"><span class="trust-ledger__number">SPECIAL</span><h3>特約會員</h3><p>依個別合作內容設定</p></div></div></div></section>
+            <section class="panel"><div class="panel__head"><h2>我的預約</h2><a class="button button--quiet button--small" href="/#advisory">新增預約</a></div><div class="panel__body" id="member-booking-list"><div class="loading-state"><div class="loading-line"></div></div></div></section>
+            <section class="panel" aria-labelledby="notification-preferences-title"><div class="panel__head"><h2 id="notification-preferences-title">摘要與通知設定</h2></div><form class="panel__body preference-form" id="newsletter-preferences-form" data-testid="newsletter-preferences"><div class="preference-row"><div><strong>站內今日摘要</strong><p>登入會員中心即可查看，不需另外同意。</p></div><span class="status status--success">固定開啟</span></div><fieldset class="preference-channels"><legend>每日摘要傳送管道</legend><label class="preference-row preference-row--control" for="digest-channel-line"><span><strong>LINE</strong><small>需已連結且仍為官方帳號好友</small></span><input type="checkbox" id="digest-channel-line" name="lineDeliveryConsent" data-testid="digest-channel-line"></label><label class="preference-row preference-row--control" for="digest-channel-email"><span><strong>Email</strong><small>需會員資料已有可用 Email</small></span><input type="checkbox" id="digest-channel-email" name="emailDeliveryConsent" data-testid="digest-channel-email"></label></fieldset><label class="preference-row preference-row--control" for="daily-digest-consent"><span><strong>每日摘要外部通知</strong><small id="daily-digest-channel-note">至少選擇一個可用管道才能開啟</small></span><input type="checkbox" id="daily-digest-consent" name="dailyDigestConsent" data-testid="daily-digest-consent"></label><label class="preference-row preference-row--control" for="marketing-consent"><span><strong>產業內容與活動通知</strong><small>獨立行銷同意，可隨時撤回</small></span><input type="checkbox" id="marketing-consent" name="marketingConsent" data-testid="marketing-consent"></label><p class="micro" id="preferences-status" aria-live="polite">正在讀取偏好設定。</p><button class="button button--secondary button--wide" type="submit" data-testid="preferences-save">儲存通知設定</button></form></section>
+          </div>
+          <aside class="stack">
+            <section class="panel"><div class="panel__head"><h2>帳戶與安全</h2></div><div class="panel__body"><p><strong id="settings-name">會員</strong><br><span class="micro" id="settings-phone">手機號碼已遮罩</span></p><button class="button button--secondary button--wide" type="button" data-logout>登出會員中心</button></div></section>
+            <section class="panel"><div class="panel__head"><h2>法律文件</h2></div><nav class="footer__links panel__body"><a href="/risk.html">投資風險與防詐聲明</a><a href="/privacy.html">隱私權政策草案</a><a href="/terms.html">會員服務條款草案</a></nav></section>
+          </aside>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <nav class="bottom-nav" aria-label="會員中心導覽">
+    <a href="#home" data-nav-view="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5v8H6v-8"/></svg><span>首頁</span></a>
+    <a href="#projects" data-nav-view="projects" data-testid="nav-projects"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5"/></svg><span>募資案</span></a>
+    <a href="#investments" data-nav-view="investments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/></svg><span>我的投資</span></a>
+    <a href="#more" data-nav-view="more"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg><span>更多</span></a>
+  </nav>
+
+  <dialog id="project-detail-dialog" aria-labelledby="member-project-dialog-title"><div class="dialog__head"><div><p class="eyebrow">Authorized brief</p><h2 id="member-project-dialog-title">專案資料</h2></div><button class="dialog__close" type="button" aria-label="關閉" data-dialog-close>×</button></div><div class="dialog__body" id="member-project-dialog-body"></div><div class="dialog__foot"><button class="button button--secondary" type="button" data-deck-open>取得 Pitch Deck</button><button class="button" type="button" data-subscription-open data-testid="subscription-open">提出認購意向</button></div></dialog>
+
+  <dialog id="subscription-dialog" aria-labelledby="subscription-dialog-title"><form id="subscription-form"><div class="dialog__head"><div><p class="eyebrow">Subscription intention</p><h2 id="subscription-dialog-title">提出認購意向</h2></div><button class="dialog__close" type="button" aria-label="關閉" data-dialog-close>×</button></div><div class="dialog__body"><div class="notice">這不是付款或契約。送出後由引薦人確認資料，再由合作方於站外決定核准額度。</div><div class="field"><label for="subscription-project">募資專案</label><input class="input" id="subscription-project" readonly><input type="hidden" name="projectId" id="subscription-project-id"></div><div class="field" style="margin-top:18px"><label for="subscription-amount">申請金額（新台幣）</label><input class="input mono" id="subscription-amount" name="requestedAmount" type="number" inputmode="numeric" min="100000" step="100000" required data-testid="subscription-amount"><p class="field__hint" id="subscription-rule">最低金額與增加級距依專案設定。</p></div><div class="field" style="margin-top:18px"><label class="checkbox"><input type="checkbox" name="riskAcknowledged" value="true" required><span>我了解這只是認購意向，可能不被核准或只獲部分分配，且可能損失全部投入資金。</span></label></div><div id="subscription-result" data-testid="subscription-status" aria-live="polite"></div></div><div class="dialog__foot"><button class="button button--secondary" type="button" data-dialog-close>取消</button><button class="button" type="submit" data-testid="subscription-submit">送出認購意向</button></div></form></dialog>
+  <div class="sr-only" id="live-region" aria-live="polite"></div>
+  <script type="module" src="/js/member.js"></script>
+</body>
+</html>

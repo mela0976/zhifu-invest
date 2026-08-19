@@ -1,0 +1,15 @@
+node_modules/
+runtime/*
+!runtime/.gitkeep
+playwright-report/
+test-results/
+dist-pages/
+.wrangler/
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.secrets/
+.DS_Store
+*.log

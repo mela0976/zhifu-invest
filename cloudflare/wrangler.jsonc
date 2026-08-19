@@ -1,0 +1,63 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "zhifu-invest-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true },
+    "traces": { "enabled": true }
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zhifu-invest-gateway",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DECKS",
+      "bucket_name": "zhifu-invest-protected-decks"
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "APP_ORIGIN": "https://mela0976.github.io",
+    "ALLOWED_ORIGINS": "https://mela0976.github.io",
+    "MEMBER_REDIRECT_URL": "https://mela0976.github.io/zhifu-invest/member.html",
+    "ADMIN_DASHBOARD_URL": "",
+    "COOKIE_SAME_SITE": "None"
+  },
+  "env": {
+    "staging": {
+      "name": "zhifu-invest-gateway-staging",
+      "workers_dev": true,
+      "triggers": {
+        "crons": []
+      },
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "APP_ORIGIN": "https://mela0976.github.io",
+        "ALLOWED_ORIGINS": "https://mela0976.github.io",
+        "MEMBER_REDIRECT_URL": "https://mela0976.github.io/zhifu-invest/member.html",
+        "ADMIN_DASHBOARD_URL": "",
+        "COOKIE_SAME_SITE": "None"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zhifu-invest-gateway-staging",
+          "database_id": "703822c4-daf0-46cc-a108-bf0651e5084d",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": []
+    }
+  }
+}

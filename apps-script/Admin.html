@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    :root{--navy:#10243e;--ink:#172435;--ivory:#f7f4ed;--gold:#aa8a4b;--line:#d9d3c6;--green:#26735a;--red:#a33d3d}
+    *{box-sizing:border-box}body{margin:0;background:var(--ivory);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Noto Sans TC",sans-serif}
+    header{background:var(--navy);color:#fff;padding:18px clamp(16px,4vw,42px);display:flex;justify-content:space-between;align-items:center;gap:16px}
+    h1{font:600 clamp(20px,3vw,30px)/1.2 Georgia,"Noto Serif TC",serif;margin:0}header small{color:#d7c69d}.header-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+    main{max-width:1280px;margin:auto;padding:24px clamp(14px,3vw,36px) 60px}.notice{border-left:4px solid var(--gold);padding:10px 14px;background:#fff8e7;margin-bottom:18px}
+    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px}.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 5px 20px #10243e0b}
+    .metric{font:600 27px/1.2 Georgia,serif;color:var(--navy)}.label{color:#5f6872;font-size:13px}.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0 12px}
+    button,select,input,textarea{font:inherit}button{border:0;border-radius:8px;padding:10px 14px;background:var(--navy);color:#fff;cursor:pointer}button.secondary{background:#fff;color:var(--navy);border:1px solid var(--line)}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #d2af67;outline-offset:2px}
+    .grid{display:grid;grid-template-columns:1.4fr 1fr;gap:16px}h2{font:600 20px Georgia,serif;margin:0 0 14px}.rows{display:grid;gap:9px}.row{border-top:1px solid var(--line);padding-top:10px;display:grid;grid-template-columns:1fr auto;gap:8px}.stamp{font-size:12px;border:1px solid currentColor;border-radius:99px;padding:3px 8px;align-self:start}.money{font-variant-numeric:tabular-nums}.error{color:var(--red)}.success{color:var(--green)}
+    dialog{border:0;border-radius:14px;max-width:660px;max-height:calc(100dvh - 16px);width:calc(100% - 24px);padding:0;overflow:auto;box-shadow:0 22px 70px #0005}dialog::backdrop{background:#10243e99}form{padding:22px;display:grid;gap:12px}label{display:grid;gap:5px;font-weight:600}input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);border-radius:7px;background:#fff}.actions{display:flex;justify-content:flex-end;gap:8px}.evidence{padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;white-space:pre-wrap}.projects{min-height:140px}.hint{font-weight:400;color:#5f6872;font-size:13px}
+    .lead-import textarea{min-height:130px;resize:vertical}.lead-import-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lead-import-grid .full{grid-column:1/-1}.lead-import-preview{border:1px solid var(--line);border-radius:10px;padding:12px;background:#f8fafc;overflow-wrap:anywhere}.lead-import-preview__counts{display:flex;gap:8px;flex-wrap:wrap}.lead-import-preview ul{margin:8px 0 0;padding-left:20px}.lead-import-result{margin:0}.lead-import button,.lead-import input,.lead-import select{min-height:44px}
+    .auth-gate{position:fixed;inset:0;z-index:10;background:#10243ee8;display:grid;place-items:center;padding:18px}.auth-gate[hidden]{display:none}.auth-card{width:min(430px,100%);background:#fff;border-radius:14px;padding:24px;box-shadow:0 24px 80px #0007}.auth-card p{color:#5f6872}.auth-card input{font-size:22px;letter-spacing:.25em;text-align:center}.auth-card button{width:100%;margin-top:4px}
+    body.locked header,body.locked main,body.locked dialog{visibility:hidden}
+    @media(max-width:760px){.grid{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}.header-actions{justify-content:flex-start}.row{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}dialog form{padding:18px}.lead-import-grid{grid-template-columns:1fr}.lead-import-grid .full{grid-column:auto}.lead-import .actions{position:sticky;bottom:0;background:#fff;padding-top:10px;padding-bottom:max(2px,env(safe-area-inset-bottom));flex-wrap:wrap}.lead-import .actions button{flex:1 1 120px}}
+  </style>
+</head>
+<body class="locked">
+  <section id="authGate" class="auth-gate" aria-labelledby="authTitle">
+    <form id="totpForm" class="auth-card">
+      <h1 id="authTitle">管理員雙重驗證</h1>
+      <p>Google 帳號已通過 allowlist。請輸入驗證器 App 的 6 位數代碼；連續失敗會暫時鎖定。</p>
+      <label>一次性驗證碼<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
+      <div id="authStatus" role="status" aria-live="polite"></div>
+      <button>驗證並進入後台</button>
+    </form>
+  </section>
+  <header>
+    <div><h1>致富投資｜營運儀表板</h1><small>引薦人營運專區・Google allowlist + TOTP 保護</small></div>
+    <div class="header-actions"><small id="adminIdentity"></small><button class="secondary" onclick="loadDashboard()">重新整理</button><button class="secondary" onclick="logoutAdmin()">登出</button></div>
+  </header>
+  <main>
+    <div class="notice">金額與人物若標示 DEMO，均為虛構測試資料。拒絕、退款及群發通知必須人工核准。</div>
+    <div id="status" role="status" aria-live="polite">請先完成雙重驗證。</div>
+    <section id="kpis" class="kpis" aria-label="營運指標"></section>
+    <div class="toolbar">
+      <button onclick="listResource('members')">會員</button><button onclick="listResource('subscriptions')">認購</button>
+      <button onclick="listResource('referrers')">引薦方</button><button onclick="listResource('commissions')">分潤</button><button onclick="newReferrer()">新增引薦方</button>
+      <button onclick="listResource('activations')">啟用申請</button><button onclick="listResource('notifications')">通知佇列</button><button onclick="listResource('audits')">稽核</button>
+      <button onclick="listLeads()">潛在投資人</button><button onclick="newLead()">新增名單</button><button onclick="openLeadImport()">CSV／Excel 批次匯入</button>
+      <button onclick="listContent()">投資內容</button><button onclick="newContent()">新增內容</button>
+      <button onclick="previewDigest()">預覽今日摘要</button><button onclick="generateDigest()">產生今日摘要</button>
+      <button class="secondary" onclick="exportResource('subscriptions')">匯出認購 CSV</button><button class="secondary" onclick="exportResource('referrers')">匯出引薦方 CSV</button><button class="secondary" onclick="exportResource('commissions')">匯出分潤 CSV</button><button class="secondary" onclick="exportResource('audits')">匯出稽核 CSV</button>
+      <button class="secondary" onclick="exportLeads()">匯出名單 CSV</button><button class="secondary" onclick="exportLeadsExcel()">匯出名單 Excel</button>
+    </div>
+    <div class="grid"><section class="card"><h2>待處理事項</h2><div id="actions" class="rows"></div></section><section class="card"><h2 id="listTitle">近期認購</h2><div id="records" class="rows"></div></section></div>
+  </main>
+  <dialog id="subscriptionDialog"><form onsubmit="saveSubscription(event)"><h2>更新認購紀錄</h2><input type="hidden" name="subscriptionId">
+    <label>認購狀態<select name="subscriptionState"><option>submitted</option><option>operations_confirmed</option><option>partner_review</option><option>approved</option><option>rejected</option><option>cancelled</option></select></label>
+    <label>核准金額<input name="approvedAmountTwd" inputmode="numeric" required></label><label>已收金額<input name="receivedAmountTwd" inputmode="numeric" required></label>
+    <label>已配置金額<input name="allocatedAmountTwd" inputmode="numeric" required></label><label>已退款金額<input name="refundedAmountTwd" inputmode="numeric" required></label>
+    <label>合作機構核准人<input name="partnerApprover"></label><label>核准日期<input name="partnerApprovedAt" type="datetime-local"></label><label>核准編號<input name="partnerReference"></label>
+    <label>異動理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#subscriptionDialog').close()">取消</button><button>儲存並稽核</button></div>
+  </form></dialog>
+  <dialog id="memberDialog"><form onsubmit="saveMember(event)"><h2>確認會員、資格與逐案權限</h2><input type="hidden" name="memberId"><div id="memberSummary" class="notice"></div>
+    <div><strong>啟用與 LINE 證據</strong><div id="activationEvidence" class="evidence">尚無啟用申請</div></div>
+    <label>會員狀態<select name="membershipState"><option value="pending">待確認</option><option value="active">正式會員</option><option value="rejected">未通過</option><option value="disabled">已停用</option></select></label>
+    <label>投資資格<select name="qualificationState"><option value="not_applied">未申請</option><option value="reviewing">審核中</option><option value="needs_information">待補件</option><option value="approved">已核准</option><option value="rejected">未通過</option><option value="expired">已到期</option></select></label>
+    <label>合作機構／實際核准人<input name="qualificationApprover" autocomplete="off"><span class="hint">不得使用示意核准人；請輸入證據上的實際人員或機構。</span></label>
+    <label>核准時間<input name="qualificationApprovedAt" type="datetime-local"></label><label>核准參考編號<input name="qualificationReference"></label><label>資格到期日<input name="qualificationExpiresAt" type="date"></label>
+    <div><strong>引薦歸因</strong><div id="referralEvidence" class="evidence">尚無來源聲明</div></div>
+    <label>管理員驗證引薦方<select name="referrerId"><option value="">不變更</option></select><span class="hint">來源碼本身只是 claimed；選擇引薦方並填寫證據後才會建立 verified 歸因。</span></label>
+    <label>引薦驗證證據編號<input name="referralEvidenceReference" autocomplete="off"></label>
+    <label><span><input name="clearReferralVerification" type="checkbox" style="width:auto"> 清除既有引薦驗證（不影響已建立的認購快照）</span></label>
+    <label>可查看的募資專案<select name="projectAccess" class="projects" multiple></select><span class="hint">按住 Ctrl／⌘ 可選多項；未選即不授予逐案存取權。</span></label>
+    <label>偏好產業（逗號分隔）<input name="preferenceIndustries" placeholder="生技醫療,半導體"></label>
+    <label>最低單筆投資額 TWD<input name="minimumTicketTwd" type="number" min="0" step="1"></label>
+    <label>最高單筆投資額 TWD<input name="maximumTicketTwd" type="number" min="1" step="1"></label>
+    <label>異動理由<textarea name="reason" required placeholder="例如：已核對來源碼、同意時間與 LINE 好友證據"></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#memberDialog').close()">取消</button><button>確認並儲存</button></div>
+  </form></dialog>
+  <dialog id="referrerDialog"><form onsubmit="saveReferrer(event)"><h2>管理引薦方</h2><input type="hidden" name="referrerId">
+    <label>來源碼<input name="code" maxlength="100" required><span class="hint">比對時不分大小寫並保存為大寫；修改時會重新檢查全站唯一。</span></label>
+    <label>顯示名稱<input name="displayName" maxlength="200" required></label>
+    <label>法定名稱<input name="legalName" maxlength="200" required></label>
+    <label>聯絡人<input name="contactName" maxlength="200" required></label>
+    <label>聯絡信箱<input name="contactEmail" type="email" maxlength="200" required></label>
+    <label>狀態<select name="status"><option value="active">active</option><option value="disabled">disabled</option></select></label>
+    <label>預設分潤 bps<input name="defaultCommissionRateBps" type="number" min="0" max="10000" step="1" required><span class="hint">100 bps = 1%；計算基礎固定為 allocated_amount。</span></label>
+    <label>協議參考編號<input name="agreementReference" maxlength="200" required></label>
+    <label>生效起點<input name="effectiveAt" type="datetime-local" required></label><label>生效終點<input name="expiresAt" type="datetime-local"></label>
+    <label>異動理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#referrerDialog').close()">取消</button><button>儲存並稽核</button></div>
+  </form></dialog>
+  <dialog id="commissionDialog"><form onsubmit="saveCommission(event)"><h2>分潤動作</h2><input type="hidden" name="subscriptionId"><div id="commissionEvidence" class="evidence"></div>
+    <label>動作<select name="action"><option value="approve">approve</option><option value="pay">pay</option><option value="void">void</option></select></label>
+    <label data-for="approve">核准證據編號<input name="approvalReference"></label><label data-for="pay">付款證據編號<input name="payoutReference"></label><label data-for="void">作廢原因<input name="voidReason"></label>
+    <label>操作理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#commissionDialog').close()">取消</button><button>確認並留下稽核</button></div>
+  </form></dialog>
+  <dialog id="leadDialog"><form onsubmit="saveLead(event)"><h2>潛在投資人名單</h2><input type="hidden" name="prospectId">
+    <label>顯示名稱<input name="displayName" maxlength="100" required></label>
+    <label>聯絡方式<input name="contact" maxlength="300" required><span class="hint">Email 或電話會正規化去重；第一個合法導入者永久保留。</span></label>
+    <label>聯絡管道<select name="channel"><option value="email">email</option><option value="phone">phone</option><option value="line">LINE</option><option value="openchat">OpenChat</option><option value="community">社群</option><option value="other">其他</option></select></label>
+    <label>來源<input name="source" maxlength="200" required></label>
+    <label>來源參考／來源證據<input name="sourceEvidence" maxlength="500" required></label>
+    <label>隱私同意證據編號<input name="privacyEvidenceReference" maxlength="500" required></label>
+    <label>隱私同意時間<input name="privacyConsentedAt" type="datetime-local" required></label>
+    <label>隱私聲明版本<input name="privacyNoticeVersion" maxlength="100" required></label>
+    <label>導入者<select name="owner" required></select><span class="hint">建立後不可變更；轉成會員後所有後續認購沿用此歸屬。</span></label>
+    <label>連結會員<select name="linkMemberId"><option value="">尚未連結</option></select></label>
+    <label>狀態<select name="status"><option value="new">new</option><option value="contacted">contacted</option><option value="qualified">qualified</option><option value="converted">converted</option><option value="archived">archived</option></select></label>
+    <label>操作理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#leadDialog').close()">取消</button><button>儲存並稽核</button></div>
+  </form></dialog>
+  <dialog id="leadImportDialog" aria-labelledby="leadImportTitle"><form class="lead-import" onsubmit="submitLeadImport(event)">
+    <div><h2 id="leadImportTitle">CSV／Excel 批次匯入潛在投資人</h2><p class="hint">可貼上 CSV，或選擇 UTF-8 CSV／Excel .xlsx 檔。Excel 僅使用部署包內的本機 SheetJS；未載入時會停止，不會自動連外。支援姓名／name、聯絡方式／email／phone、來源管道／channel、來源／source 等欄名。</p></div>
+    <label>CSV／Excel 檔案<input id="leadImportCsvFile" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+    <label>貼上 CSV<textarea id="leadImportCsvText" placeholder="姓名,電子郵件,來源管道,來源&#10;王小姐,wang@example.com,OpenChat,北區社群"></textarea></label>
+    <div class="lead-import-grid">
+      <label>批次導入者<select name="owner" required></select><span class="hint">整批只使用此導入者；CSV 內若帶 owner／導入者欄位會列為錯誤，不會默默改歸屬。</span></label>
+      <label>批次來源證據<input name="sourceEvidence" maxlength="500" required placeholder="例如 ATTENDEE-20260819"></label>
+      <label>隱私同意證據編號<input name="privacyEvidenceReference" maxlength="500" required></label>
+      <label>隱私同意時間<input name="privacyConsentedAt" type="datetime-local" required></label>
+      <label>隱私聲明版本<input name="privacyNoticeVersion" maxlength="100" required placeholder="privacy-v1"></label>
+      <label class="full">匯入理由<textarea name="reason" required maxlength="1000" placeholder="例如：已核對活動報名同意紀錄與批次來源"></textarea></label>
+    </div>
+    <div id="leadImportPreview" class="lead-import-preview" aria-live="polite"><p class="lead-import-result">尚未讀取匯入資料。</p></div>
+    <div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#leadImportDialog').close()">取消</button><button id="leadImportSubmit" disabled>整批匯入</button></div>
+  </form></dialog>
+  <dialog id="contentDialog"><form onsubmit="saveContent(event)"><h2>投資內容</h2><input type="hidden" name="contentId">
+    <label>內容類型<select name="type"><option value="video">影音</option><option value="article">文章</option><option value="project_update">專案進度</option></select></label>
+    <label>標題<input name="title" maxlength="200" required></label><label>摘要<textarea name="summary" maxlength="2000"></textarea></label>
+    <label>HTTPS 內容網址<input name="url" type="url" pattern="https://.*" required></label>
+    <label>關聯專案<select name="projectId"><option value="">一般內容</option></select></label>
+    <label>可見範圍<select name="visibility"><option value="member">會員</option><option value="qualified">合格投資人</option><option value="public">公開</option></select></label>
+    <label>狀態<select name="status"><option value="draft">草稿</option><option value="published">已發布</option></select></label>
+    <label>風險提示<textarea name="riskNotice" required>內容僅供資訊參考，不構成投資建議。</textarea></label>
+    <label><span><input name="publicSafe" type="checkbox" style="width:auto"> 已完成公開內容審核</span></label>
+    <label>操作理由<textarea name="reason" required></textarea></label><div class="actions"><button type="button" class="secondary" onclick="document.querySelector('#contentDialog').close()">取消</button><button>儲存並稽核</button></div>
+  </form></dialog>
+  <script>
+    const SESSION_KEY='zhifuAdminSession';
+    const state={subscriptions:new Map(),members:new Map(),allMembers:new Map(),referrers:new Map(),commissions:new Map(),prospects:new Map(),content:new Map(),projects:[],activations:[]};
+    let leadImportState={total:0,rows:[],errors:[]};
+    const money=value=>new Intl.NumberFormat('zh-TW',{style:'currency',currency:'TWD',maximumFractionDigits:0}).format(Number(value||0));
+    const serverCall=(name,...args)=>new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[name](...args));
+    function sessionToken(){return window.sessionStorage.getItem(SESSION_KEY)||''}
+    function rpc(operation,payload={}){return serverCall('adminRpc',{operation,payload,sessionToken:sessionToken()}).then(result=>result.ok?result.data:Promise.reject(new Error(result.error.message)))}
+    function setStatus(text,error=false){const element=document.querySelector('#status');element.textContent=text;element.className=error?'error':'success'}
+    function setAuthStatus(text,error=false){const element=document.querySelector('#authStatus');element.textContent=text;element.className=error?'error':'success'}
+    function esc(value){return String(value??'').replace(/[&<>"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]))}
+    function jsArg(value){return esc(JSON.stringify(String(value??'')))}
+    function parseCsvMatrix(text){
+      const records=[];let row=[];let cell='';let quoted=false;const source=String(text||'').replace(/^\uFEFF/,'');
+      for(let index=0;index<source.length;index+=1){const character=source[index];if(character==='"'){if(quoted&&source[index+1]==='"'){cell+='"';index+=1}else quoted=!quoted}else if(character===','&&!quoted){row.push(cell);cell=''}else if((character==='\n'||character==='\r')&&!quoted){if(character==='\r'&&source[index+1]==='\n')index+=1;row.push(cell);if(row.some(value=>String(value).trim()))records.push(row);row=[];cell=''}else cell+=character}
+      row.push(cell);if(row.some(value=>String(value).trim()))records.push(row);return records
+    }
+    function normalizeCsvHeader(value){return String(value||'').replace(/^\uFEFF/,'').normalize('NFKC').trim().toLowerCase().replace(/[\s_-]+/g,'')}
+    function parseProspectMatrix(matrix,fileLabel='檔案'){
+      if(!matrix.length)return{total:0,rows:[],errors:[{line:1,message:`${fileLabel} 沒有標題列。`}]};
+      if(matrix.length-1>500)return{total:matrix.length-1,rows:[],errors:[{line:1,message:'單次最多匯入 500 列；請縮小檔案後整批重試。'}]};
+      const aliases={displayName:['displayname','name','姓名','顯示名稱','名稱'],contact:['contact','聯絡方式','聯絡資料'],email:['email','emailaddress','電子郵件','信箱','聯絡信箱'],phone:['phone','mobile','電話','手機','手機號碼'],channel:['channel','sourcechannel','來源管道','聯絡管道','管道'],source:['source','sourcename','來源','來源名稱'],status:['status','狀態'],owner:['owner','ownerreferrerid','acquisitionownerid','導入者','引薦方']};
+      const headers=matrix[0].map(normalizeCsvHeader);const indexes={};for(const [field,names]of Object.entries(aliases))indexes[field]=headers.map((header,index)=>names.map(normalizeCsvHeader).includes(header)?index:-1).filter(index=>index>=0);
+      const requiredMissing=['displayName','source'].filter(field=>!indexes[field].length);if(!indexes.contact.length&&!indexes.email.length&&!indexes.phone.length)requiredMissing.push('contact');
+      const rows=[];const errors=[];const read=(record,field)=>{for(const index of indexes[field]||[]){const value=String(record[index]||'').trim();if(value)return value}return''};
+      if(requiredMissing.length)errors.push({line:1,message:`缺少必要欄位：${requiredMissing.join('、')}`});
+      matrix.slice(1).forEach((record,index)=>{const line=index+2;const rowOwner=read(record,'owner');if(rowOwner){errors.push({line,message:'匯入檔案不可指定導入者；請使用批次導入者欄位，避免默默更改歸屬。'});return}const email=read(record,'email');const phone=read(record,'phone');const contact=read(record,'contact')||email||phone;const item={displayName:read(record,'displayName'),contact,channel:read(record,'channel')||(email?'email':phone?'phone':'other'),source:read(record,'source'),status:read(record,'status')||'new'};if(email)item.email=email;if(phone)item.phone=phone;const missing=['displayName','contact','source'].filter(field=>!item[field]);if(missing.length){errors.push({line,message:`缺少 ${missing.join('、')}`});return}if(item.status==='converted'){errors.push({line,message:'批次匯入不可使用 converted；請先匯入為 qualified，再透過稽核 PATCH 連結會員。'});return}if(!['new','contacted','qualified','archived'].includes(item.status)){errors.push({line,message:`不支援的狀態：${item.status}`});return}rows.push(item)});
+      return{total:Math.max(0,matrix.length-1),rows:requiredMissing.length?[]:rows,errors}
+    }
+    function parseProspectCsv(text){return parseProspectMatrix(parseCsvMatrix(text),'CSV')}
+    function requireLocalSheetJs(){const library=window.XLSX;if(!library||typeof library.read!=='function'||!library.utils||typeof library.utils.sheet_to_json!=='function'||typeof library.utils.aoa_to_sheet!=='function'||typeof library.utils.book_new!=='function'||typeof library.utils.book_append_sheet!=='function'||typeof library.writeFile!=='function')throw new Error('Excel 元件未載入；請由受控部署包安裝本機 SheetJS 後再試。');return library}
+    function workbookCells(sheet){return Object.entries(sheet||{}).filter(([address,cell])=>/^[A-Z]{1,3}[1-9]\d*$/.test(address)&&cell&&typeof cell==='object')}
+    function parseProspectWorkbook(buffer){
+      const xlsx=requireLocalSheetJs();
+      const workbook=xlsx.read(buffer,{type:'array',dense:false,cellFormula:true,cellHTML:false,cellNF:false,cellStyles:false,bookDeps:false,bookVBA:false});
+      const populated=(workbook&&workbook.SheetNames||[]).map(sheetName=>({sheetName,sheet:workbook.Sheets&&workbook.Sheets[sheetName],cells:workbookCells(workbook.Sheets&&workbook.Sheets[sheetName])})).filter(item=>item.cells.length);
+      if(populated.length!==1)return{total:0,rows:[],errors:[{line:1,message:`Excel 必須只有一個非空白工作表；目前找到 ${populated.length} 個。`}]};
+      const selected=populated[0];if(selected.cells.length>10000)return{total:0,rows:[],errors:[{line:1,message:'Excel 實際儲存格過多；請只保留匯入所需欄位與最多 500 列。'}]};
+      const unsafe=selected.cells.flatMap(([address,cell])=>{const line=Number(String(address).match(/\d+$/)?.[0]||1);return[...(Object.prototype.hasOwnProperty.call(cell,'f')||Object.prototype.hasOwnProperty.call(cell,'F')?[{line,message:`儲存格 ${address} 含公式，不可匯入。`}]:[]),...(Object.prototype.hasOwnProperty.call(cell,'l')?[{line,message:`儲存格 ${address} 含超連結，不可匯入。`}]:[])]});
+      if(unsafe.length)return{total:0,rows:[],errors:unsafe.slice(0,20)};
+      const matrix=xlsx.utils.sheet_to_json(selected.sheet,{header:1,defval:'',raw:false});return parseProspectMatrix(matrix,'Excel')
+    }
+    function canSubmitProspectImport(preview){return Boolean(preview&&preview.rows&&preview.rows.length>0&&preview.errors&&preview.errors.length===0)}
+    function renderLeadImportPreview(){const target=document.querySelector('#leadImportPreview');const valid=leadImportState.rows.length;target.innerHTML=`<div class="lead-import-preview__counts"><span class="stamp success">有效 ${valid}</span><span class="stamp ${leadImportState.errors.length?'error':''}">錯誤 ${leadImportState.errors.length}</span><span class="label">總列數 ${leadImportState.total}</span></div>${leadImportState.errors.length?`<ul>${leadImportState.errors.slice(0,8).map(error=>`<li>第 ${error.line} 列：${esc(error.message)}</li>`).join('')}</ul><p class="hint">為確保批次原子性，請先修正全部錯誤；有錯誤時整批不會送出。</p>`:`<p class="lead-import-result">${valid?'全部資料驗證完成，可整批匯入。':'尚未讀取匯入資料。'}</p>`}`;document.querySelector('#leadImportSubmit').disabled=!canSubmitProspectImport(leadImportState)}
+    function openDashboard(email){document.body.classList.remove('locked');document.querySelector('#authGate').hidden=true;document.querySelector('#adminIdentity').textContent=email||''}
+    function closeDashboard(message){document.body.classList.add('locked');document.querySelector('#authGate').hidden=false;document.querySelector('#adminIdentity').textContent='';setAuthStatus(message||'請輸入驗證碼。',Boolean(message));document.querySelector('#totpForm input').focus()}
+    function syncQualificationRequirements(){const form=document.querySelector('#memberDialog form');const required=form.elements.qualificationState.value==='approved';['qualificationApprover','qualificationApprovedAt','qualificationReference','qualificationExpiresAt'].forEach(name=>{form.elements[name].required=required})}
+    document.querySelector('#memberDialog [name="qualificationState"]').addEventListener('change',syncQualificationRequirements);
+    async function bootstrap(){const token=sessionToken();if(!token)return closeDashboard('');try{const result=await serverCall('adminSessionStatus',token);if(!result.ok)throw new Error(result.error.message);openDashboard(result.data.email);await loadDashboard()}catch(error){window.sessionStorage.removeItem(SESSION_KEY);closeDashboard(error.message)}}
+    document.querySelector('#totpForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget;const code=new FormData(form).get('code');setAuthStatus('驗證中…');try{const result=await serverCall('adminAuthenticateTotp',code);if(!result.ok)throw new Error(result.error.message);window.sessionStorage.setItem(SESSION_KEY,result.data.token);form.reset();openDashboard(result.data.email);await loadDashboard()}catch(error){setAuthStatus(error.message,true)}});
+    async function logoutAdmin(){const token=sessionToken();window.sessionStorage.removeItem(SESSION_KEY);if(token)await serverCall('adminLogout',token).catch(()=>{});closeDashboard('已登出。')}
+    async function loadDashboard(){
+      try{
+        setStatus('載入中…');
+        const [data,projects,activations,referrers]=await Promise.all([
+          rpc('adminDashboard'),rpc('adminList',{resource:'projects',limit:500}),
+          rpc('adminList',{resource:'activations',limit:500}),rpc('adminList',{resource:'referrers',limit:500})
+        ]);
+        state.projects=projects.records;state.activations=activations.records;
+        state.referrers=new Map(referrers.records.map(record=>[record.id,record]));
+        state.allMembers=new Map((data.members||[]).map(record=>[record.id,record]));
+        const labels={members:'會員',pendingMembers:'待確認會員',qualifiedMembers:'合格會員',projects:'專案',subscriptions:'認購筆數',prospectCount:'潛在投資人',newProspectCount:'新名單',linkedProspectCount:'已轉會員',acquisitionAttributedSubscriptionCount:'導入歸屬認購筆數',acquisitionAttributedRequestedAmountTwd:'導入歸屬申請額',acquisitionAttributedAllocatedAmountTwd:'導入歸屬配置額',publishedContentCount:'已發布內容',dailyDigestConsentCount:'摘要主動通知同意',todayDigestCount:'今日站內摘要',referrerCount:'引薦方',attributedMemberCount:'已驗證歸因會員',commissionAccruedAmountTwd:'已發生分潤',commissionApprovedAmountTwd:'已核准分潤',commissionPaidAmountTwd:'已付分潤',requestedAmountTwd:'申請總額',approvedAmountTwd:'核准總額',receivedAmountTwd:'到帳總額',allocatedAmountTwd:'配置總額',refundedAmountTwd:'退款總額',notificationActions:'通知待辦'};
+        document.querySelector('#kpis').innerHTML=Object.entries(labels).map(([key,label])=>`<article class="card"><div class="metric">${key.endsWith('Twd')?money(data.kpis[key]):esc(data.kpis[key])}</div><div class="label">${label}</div></article>`).join('');
+        state.subscriptions=new Map(data.recentSubscriptions.map(record=>[record.id,record]));renderSubscriptions(data.recentSubscriptions);renderActions(data.actionQueue);setStatus(`資料更新：${new Date(data.generatedAt).toLocaleString('zh-TW')}`)
+      }catch(error){if(/session|驗證|expired/i.test(error.message)){window.sessionStorage.removeItem(SESSION_KEY);closeDashboard(error.message)}else setStatus(error.message,true)}
+    }
+    function renderSubscriptions(records){document.querySelector('#listTitle').textContent='近期認購';document.querySelector('#records').innerHTML=records.map(record=>`<div class="row"><div><strong>${esc(record.memberName||record.memberId)}</strong><br><span class="label">${esc(record.projectName||record.projectId)}・${esc(record.id)}</span><br><span class="money">申請 ${money(record.requestedAmountTwd)}／核准 ${money(record.approvedAmountTwd)}／到帳 ${money(record.receivedAmountTwd)}／配置 ${money(record.allocatedAmountTwd)}／退款 ${money(record.refundedAmountTwd)}</span></div><div><span class="stamp">${esc(record.subscriptionState)}</span><br><button onclick="editSubscription(${jsArg(record.id)})">確認／更新</button></div></div>`).join('')||'目前沒有紀錄'}
+    function renderActions(queue){
+      state.members=new Map(queue.members.map(record=>[record.id,record]));
+      for(const record of queue.commissions||[])state.commissions.set(record.id,record);
+      const items=[
+        ...queue.members.map(record=>({title:record.legalName||record.displayName,meta:'會員待確認 '+record.id,action:`<button onclick="editMember(${jsArg(record.id)})">確認會員</button>`})),
+        ...queue.subscriptions.map(record=>({title:record.memberName||record.id,meta:'認購 '+record.subscriptionState,action:''})),
+        ...(queue.commissions||[]).map(record=>({title:record.referrerName||record.id,meta:`分潤 ${record.commissionState}・${money(record.commissionAccruedAmountTwd)}`,action:`<button onclick="editCommission(${jsArg(record.id)})">處理分潤</button>`})),
+        ...queue.notifications.map(record=>({title:record.eventType,meta:'通知 '+record.state,action:''}))
+      ];
+      document.querySelector('#actions').innerHTML=items.map(item=>`<div class="row"><div><strong>${esc(item.title)}</strong><br><span class="label">${esc(item.meta)}</span></div>${item.action}</div>`).join('')||'目前沒有待辦'
+    }
+    function renderReferrers(records){
+      state.referrers=new Map(records.map(record=>[record.id,record]));
+      document.querySelector('#records').innerHTML=records.map(record=>`<div class="row"><div><strong>${esc(record.displayName)}</strong><br><span class="label">${esc(record.code)}・${esc(record.status)}・${esc(record.defaultCommissionRateBps)} bps<br>${esc(record.legalName)}｜${esc(record.contactName)}｜${esc(record.contactEmail)}<br>協議 ${esc(record.agreementReference)}｜${esc(record.effectiveAt)} ～ ${esc(record.expiresAt||'無期限')}</span></div><button onclick="editReferrer(${jsArg(record.id)})">管理</button></div>`).join('')||'目前沒有引薦方'
+    }
+    function renderCommissions(records){
+      state.commissions=new Map(records.map(record=>[record.id,record]));
+      document.querySelector('#records').innerHTML=records.map(record=>`<div class="row"><div><strong>${esc(record.referrerName||record.referrerCode)}</strong><br><span class="label">${esc(record.memberName)}・${esc(record.projectName)}・${esc(record.id)}<br>計算基礎 ${money(record.commissionBasisAmountTwd)} × ${esc(record.referralSnapshot?.commissionRateBps||0)} bps = ${money(record.commissionAccruedAmountTwd)}</span></div><div><span class="stamp">${esc(record.commissionState)}</span><br>${['accrued','approved'].includes(record.commissionState)?`<button onclick="editCommission(${jsArg(record.id)})">處理</button>`:''}</div></div>`).join('')||'目前沒有可分潤認購'
+    }
+    async function listResource(resource){
+      try{
+        const data=await rpc('adminList',{resource,limit:100});
+        document.querySelector('#listTitle').textContent={members:'會員',subscriptions:'認購',referrers:'引薦方',commissions:'分潤',activations:'啟用申請',notifications:'通知佇列',audits:'稽核'}[resource]||resource;
+        if(resource==='subscriptions'){state.subscriptions=new Map(data.records.map(record=>[record.id,record]));return renderSubscriptions(data.records)}
+        if(resource==='referrers')return renderReferrers(data.records);
+        if(resource==='commissions')return renderCommissions(data.records);
+        if(resource==='members')state.members=new Map(data.records.map(record=>[record.id,record]));
+        document.querySelector('#records').innerHTML=data.records.map(record=>`<div class="row"><div><strong>${esc(record.legalName||record.displayName||record.eventType||record.action||record.fullName||record.id)}</strong><br><span class="label">${esc(resource==='activations'?`來源 ${record.sourceCode||'待補'}・同意 ${record.consentedAt||'待補'}・LINE ${record.lineFriendshipState||'無證據'}`:(record.membershipState||record.state||record.createdAt||''))}</span></div>${resource==='members'?`<button onclick="editMember(${jsArg(record.id)})">確認／管理</button>`:record.state==='pending_manual'?`<button onclick="approveNotification(${jsArg(record.id)})">人工核准</button>`:''}</div>`).join('')||'目前沒有紀錄'
+      }catch(error){setStatus(error.message,true)}
+    }
+    function editSubscription(id){const record=state.subscriptions.get(id);if(!record)return;const dialog=document.querySelector('#subscriptionDialog');const form=dialog.querySelector('form');for(const [key,value] of Object.entries(record))if(form.elements[key])form.elements[key].value=value??'';if(record.partnerApproval){form.elements.partnerApprover.value=record.partnerApproval.approver;form.elements.partnerApprovedAt.value=String(record.partnerApproval.approvedAt).slice(0,16);form.elements.partnerReference.value=record.partnerApproval.reference}dialog.showModal()}
+    async function saveSubscription(event){event.preventDefault();const values=new FormData(event.currentTarget);try{let approval;if(values.get('partnerReference')){if(!values.get('partnerApprover')||!values.get('partnerApprovedAt'))throw new Error('填寫核准編號時，合作機構核准人與日期也必填。');approval={approver:values.get('partnerApprover'),approvedAt:new Date(values.get('partnerApprovedAt')).toISOString(),reference:values.get('partnerReference')}}const patch={subscriptionState:values.get('subscriptionState'),approvedAmountTwd:Number(values.get('approvedAmountTwd')),receivedAmountTwd:Number(values.get('receivedAmountTwd')),allocatedAmountTwd:Number(values.get('allocatedAmountTwd')),refundedAmountTwd:Number(values.get('refundedAmountTwd'))};if(approval)patch.partnerApproval=approval;await rpc('adminPatchSubscription',{subscriptionId:values.get('subscriptionId'),patch,reason:values.get('reason')});document.querySelector('#subscriptionDialog').close();await loadDashboard()}catch(error){setStatus(error.message,true)}}
+    async function approveNotification(id){try{await rpc('adminApproveNotification',{notificationId:id,reason:'引薦人後台人工核准'});await listResource('notifications')}catch(error){setStatus(error.message,true)}}
+    function latestActivation(memberId){return state.activations.filter(record=>record.memberId===memberId).sort((left,right)=>String(right.createdAt).localeCompare(String(left.createdAt)))[0]||null}
+    function editMember(id){
+      const record=state.members.get(id);if(!record)return;
+      const dialog=document.querySelector('#memberDialog');const form=dialog.querySelector('form');const approval=record.qualificationApproval||{};const activation=latestActivation(record.id);const attribution=record.referralAttribution||null;
+      form.elements.memberId.value=record.id;form.elements.membershipState.value=record.membershipState;form.elements.qualificationState.value=record.qualificationState;form.elements.qualificationApprover.value=approval.approver||'';form.elements.qualificationApprovedAt.value=approval.approvedAt?new Date(approval.approvedAt).toISOString().slice(0,16):'';form.elements.qualificationReference.value=approval.reference||'';form.elements.qualificationExpiresAt.value=String(approval.expiresAt||'').slice(0,10);
+      form.elements.projectAccess.innerHTML=state.projects.map(project=>`<option value="${esc(project.id)}">${esc(project.displayName||project.id)}</option>`).join('');[...form.elements.projectAccess.options].forEach(option=>{option.selected=(record.projectAccess||[]).includes(option.value)});
+      const preferences=record.investmentPreferences||{};form.elements.preferenceIndustries.value=(preferences.industries||[]).join(',');form.elements.minimumTicketTwd.value=preferences.minimumTicketTwd??'';form.elements.maximumTicketTwd.value=preferences.maximumTicketTwd??'';
+      form.elements.referrerId.innerHTML='<option value="">不變更</option>'+[...state.referrers.values()].map(referrer=>`<option value="${esc(referrer.id)}">${esc(referrer.displayName)}（${esc(referrer.code)}・${esc(referrer.status)}）</option>`).join('');
+      form.elements.referrerId.value='';form.elements.referralEvidenceReference.value='';form.elements.clearReferralVerification.checked=false;form.elements.reason.value='';syncQualificationRequirements();
+      document.querySelector('#memberSummary').textContent=`${record.legalName||record.displayName}｜${record.phone||'手機待補'}｜會員 LINE 狀態：${record.lineFriendshipState||'unknown'}`;
+      document.querySelector('#activationEvidence').textContent=activation?`來源碼：${activation.sourceCode||'待補'}\n來源：${activation.sourceName||'待補'}\n同意時間：${activation.consentedAt||'待補'}\n伺服器 LINE 好友證據：${activation.lineFriendshipState||'無'}`:'尚無啟用申請；不可只靠畫面勾選認定為 LINE 好友。';
+      document.querySelector('#referralEvidence').textContent=attribution?`${attribution.state}：${attribution.referralCode||'無'}｜${attribution.claimedAt||''}\n驗證證據：${attribution.evidenceReference||'無'}｜${attribution.verifiedBy||''}｜${attribution.verifiedAt||''}`:'尚無有效來源歸因';
+      dialog.showModal()
+    }
+    async function saveMember(event){
+      event.preventDefault();const values=new FormData(event.currentTarget);
+      try{
+        const patch={membershipState:values.get('membershipState'),qualificationState:values.get('qualificationState'),projectAccess:values.getAll('projectAccess')};
+        const industries=String(values.get('preferenceIndustries')||'').split(',').map(value=>value.trim()).filter(Boolean);if(industries.length)patch.investmentPreferences={industries,minimumTicketTwd:Number(values.get('minimumTicketTwd')),maximumTicketTwd:Number(values.get('maximumTicketTwd'))};
+        if(patch.qualificationState==='approved'){if(!values.get('qualificationApprover')||!values.get('qualificationApprovedAt')||!values.get('qualificationReference')||!values.get('qualificationExpiresAt'))throw new Error('資格核准必須填寫實際核准人、核准時間、參考編號與到期日。');patch.qualificationApproval={approver:values.get('qualificationApprover'),approvedAt:new Date(values.get('qualificationApprovedAt')).toISOString(),reference:values.get('qualificationReference'),expiresAt:new Date(values.get('qualificationExpiresAt')+'T23:59:59+08:00').toISOString()}}
+        if(values.get('clearReferralVerification'))patch.referralAttribution=null;
+        else if(values.get('referrerId')||values.get('referralEvidenceReference')){if(!values.get('referrerId')||!values.get('referralEvidenceReference'))throw new Error('驗證引薦歸因時，引薦方與證據編號都必填。');patch.referralAttribution={referrerId:values.get('referrerId'),evidenceReference:values.get('referralEvidenceReference')}}
+        await rpc('adminPatchMember',{memberId:values.get('memberId'),patch,reason:values.get('reason')});document.querySelector('#memberDialog').close();await loadDashboard()
+      }catch(error){setStatus(error.message,true)}
+    }
+    function newReferrer(){
+      const form=document.querySelector('#referrerDialog form');form.reset();form.elements.referrerId.value='';form.elements.code.disabled=false;form.elements.status.value='active';form.elements.effectiveAt.value=new Date().toISOString().slice(0,16);document.querySelector('#referrerDialog').showModal()
+    }
+    function editReferrer(id){
+      const record=state.referrers.get(id);if(!record)return;const form=document.querySelector('#referrerDialog form');form.reset();form.elements.referrerId.value=record.id;form.elements.code.value=record.code;form.elements.code.disabled=false;for(const name of ['displayName','legalName','contactName','contactEmail','status','defaultCommissionRateBps','agreementReference'])form.elements[name].value=record[name]??'';form.elements.effectiveAt.value=String(record.effectiveAt).slice(0,16);form.elements.expiresAt.value=record.expiresAt?String(record.expiresAt).slice(0,16):'';document.querySelector('#referrerDialog').showModal()
+    }
+    async function saveReferrer(event){
+      event.preventDefault();const values=new FormData(event.currentTarget);const referrerId=values.get('referrerId');
+      try{
+        const record={code:values.get('code'),displayName:values.get('displayName'),legalName:values.get('legalName'),contactName:values.get('contactName'),contactEmail:values.get('contactEmail'),status:values.get('status'),defaultCommissionRateBps:Number(values.get('defaultCommissionRateBps')),commissionBasis:'allocated_amount',agreementReference:values.get('agreementReference'),effectiveAt:new Date(values.get('effectiveAt')).toISOString(),expiresAt:values.get('expiresAt')?new Date(values.get('expiresAt')).toISOString():null};
+        if(referrerId)await rpc('adminPatchReferrer',{referrerId,patch:record,reason:values.get('reason')});
+        else await rpc('adminCreateReferrer',{referrer:record,reason:values.get('reason')});
+        document.querySelector('#referrerDialog').close();await loadDashboard();await listResource('referrers')
+      }catch(error){setStatus(error.message,true)}
+    }
+    function syncCommissionRequirements(){
+      const form=document.querySelector('#commissionDialog form');const action=form.elements.action.value;
+      for(const name of ['approvalReference','payoutReference','voidReason'])form.elements[name].required=false;
+      form.elements[{approve:'approvalReference',pay:'payoutReference',void:'voidReason'}[action]].required=true;
+      form.querySelectorAll('[data-for]').forEach(label=>label.hidden=label.dataset.for!==action)
+    }
+    document.querySelector('#commissionDialog [name="action"]').addEventListener('change',syncCommissionRequirements);
+    function editCommission(id){
+      const record=state.commissions.get(id)||state.subscriptions.get(id);if(!record)return;const form=document.querySelector('#commissionDialog form');form.reset();form.elements.subscriptionId.value=record.id;form.elements.action.value=record.commissionState==='approved'?'pay':'approve';document.querySelector('#commissionEvidence').textContent=`${record.referrerName||record.referrerCode}｜配置 ${money(record.allocatedAmountTwd)}｜分潤 ${money(record.commissionAccruedAmountTwd)}｜${record.commissionState}\n協議：${record.referralSnapshot?.agreementReference||'無'}\n核准證據：${record.commissionApproval?.reference||'無'}｜付款證據：${record.commissionPayment?.reference||'無'}`;syncCommissionRequirements();document.querySelector('#commissionDialog').showModal()
+    }
+    async function saveCommission(event){
+      event.preventDefault();const values=new FormData(event.currentTarget);
+      try{await rpc('adminPatchCommission',{subscriptionId:values.get('subscriptionId'),action:values.get('action'),approvalReference:values.get('approvalReference')||undefined,payoutReference:values.get('payoutReference')||undefined,voidReason:values.get('voidReason')||undefined,reason:values.get('reason')});document.querySelector('#commissionDialog').close();await loadDashboard();await listResource('commissions')}catch(error){setStatus(error.message,true)}
+    }
+    async function exportResource(resource){try{const data=await rpc('adminExport',{resource,reason:'引薦人後台手動匯出'});const url=URL.createObjectURL(new Blob([data.csv],{type:data.mimeType}));const anchor=Object.assign(document.createElement('a'),{href:url,download:data.filename});anchor.click();URL.revokeObjectURL(url)}catch(error){setStatus(error.message,true)}}
+    function leadOptions(form){form.elements.owner.innerHTML=[...state.referrers.values()].filter(record=>record.status==='active').map(record=>`<option value="${esc(record.id)}">${esc(record.displayName)}（${esc(record.code)}）</option>`).join('');form.elements.linkMemberId.innerHTML='<option value="">尚未連結</option>'+[...state.allMembers.values()].map(record=>`<option value="${esc(record.id)}">${esc(record.legalName||record.displayName||record.id)}</option>`).join('')}
+    function openLeadImport(){const dialog=document.querySelector('#leadImportDialog');const form=dialog.querySelector('form');form.reset();form.elements.owner.innerHTML='<option value="">請選擇批次導入者</option>'+[...state.referrers.values()].filter(record=>record.status==='active').map(record=>`<option value="${esc(record.id)}">${esc(record.displayName)}（${esc(record.code)}）</option>`).join('');form.elements.privacyConsentedAt.value=new Date().toISOString().slice(0,16);leadImportState={total:0,rows:[],errors:[]};renderLeadImportPreview();dialog.showModal()}
+    function updateLeadImportPreview(text){leadImportState=parseProspectCsv(text);renderLeadImportPreview()}
+    document.querySelector('#leadImportCsvText').addEventListener('input',event=>updateLeadImportPreview(event.currentTarget.value));
+    document.querySelector('#leadImportCsvFile').addEventListener('change',async event=>{const file=event.currentTarget.files&&event.currentTarget.files[0];if(!file)return;try{if(/\.xlsx$/i.test(file.name||'')){if(Number(file.size||0)>5*1024*1024)throw new Error('Excel 檔案不可超過 5 MiB。');document.querySelector('#leadImportCsvText').value='';leadImportState=parseProspectWorkbook(await file.arrayBuffer());renderLeadImportPreview()}else{const text=await file.text();document.querySelector('#leadImportCsvText').value=text;updateLeadImportPreview(text)}}catch(error){leadImportState={total:0,rows:[],errors:[{line:1,message:error.message}]};renderLeadImportPreview();setStatus('匯入檔案無法讀取：'+error.message,true)}});
+    async function submitLeadImport(event){event.preventDefault();const form=event.currentTarget;const values=new FormData(form);try{if(!canSubmitProspectImport(leadImportState))throw new Error('請先修正全部錯誤；批次必須一次全部通過。');const owner=values.get('owner');if(!owner)throw new Error('請選擇批次導入者。');const rows=leadImportState.rows.map(record=>Object.assign({},record,{owner}));const sourceEvidence=values.get('sourceEvidence');const privacyEvidence={reference:values.get('privacyEvidenceReference'),consentedAt:new Date(values.get('privacyConsentedAt')).toISOString(),noticeVersion:values.get('privacyNoticeVersion')};const reason=values.get('reason');const result=await rpc('adminImportProspects',{rows,sourceEvidence,privacyEvidence,reason});document.querySelector('#leadImportPreview').innerHTML=`<p class="lead-import-result success">匯入 ${result.importedCount||0} 筆，略過 ${result.skippedCount||0} 筆。</p>${(result.skipped||[]).length?`<ul>${result.skipped.slice(0,8).map(item=>`<li>伺服器略過第 ${item.row} 列：${esc(item.reason)}</li>`).join('')}</ul>`:''}`;setStatus(`匯入 ${result.importedCount||0} 筆，略過 ${result.skippedCount||0} 筆。`);await loadDashboard();await listLeads()}catch(error){setStatus('批次匯入失敗：'+error.message,true)}}
+    async function listLeads(){try{const data=await rpc('adminListProspects',{limit:500});state.prospects=new Map(data.records.map(record=>[record.id,record]));document.querySelector('#listTitle').textContent=`潛在投資人（${data.kpis.linked}/${data.kpis.total} 已轉會員）`;document.querySelector('#records').innerHTML=data.records.map(record=>`<div class="row"><div><strong>${esc(record.displayName)}</strong><br><span class="label">${esc(record.channel)}・${esc(record.contact)}<br>來源 ${esc(record.source)}｜導入者 ${esc(record.acquisitionOwnerId)}｜${esc(record.status)}</span></div><button onclick="editLead(${jsArg(record.id)})">確認／連結</button></div>`).join('')||'目前沒有名單'}catch(error){setStatus(error.message,true)}}
+    function setLeadEvidenceReadonly(form,readonly){['source','sourceEvidence','privacyEvidenceReference','privacyConsentedAt','privacyNoticeVersion'].forEach(name=>{form.elements[name].readOnly=readonly});form.elements.owner.disabled=readonly}
+    function newLead(){const form=document.querySelector('#leadDialog form');form.reset();leadOptions(form);form.elements.status.value='new';form.elements.privacyConsentedAt.value=new Date().toISOString().slice(0,16);setLeadEvidenceReadonly(form,false);document.querySelector('#leadDialog').showModal()}
+    function editLead(id){const record=state.prospects.get(id);if(!record)return;const form=document.querySelector('#leadDialog form');form.reset();leadOptions(form);for(const [key,value] of Object.entries(record))if(form.elements[key]&&!['privacyConsentedAt'].includes(key))form.elements[key].value=value??'';form.elements.prospectId.value=record.id;form.elements.sourceEvidence.value=record.sourceReference||'';form.elements.privacyConsentedAt.value=record.privacyConsentedAt?String(record.privacyConsentedAt).slice(0,16):'';form.elements.owner.value=record.acquisitionOwnerId;form.elements.linkMemberId.value=record.linkedMemberId||'';setLeadEvidenceReadonly(form,true);document.querySelector('#leadDialog').showModal()}
+    async function saveLead(event){event.preventDefault();const form=event.currentTarget;const values=new FormData(form);try{const prospectId=values.get('prospectId');const lead=prospectId?{displayName:values.get('displayName'),status:values.get('status'),linkMemberId:values.get('linkMemberId')||undefined}:{displayName:values.get('displayName'),contact:values.get('contact'),channel:values.get('channel'),source:values.get('source'),sourceEvidence:values.get('sourceEvidence'),privacyEvidenceReference:values.get('privacyEvidenceReference'),privacyConsentedAt:new Date(values.get('privacyConsentedAt')).toISOString(),privacyNoticeVersion:values.get('privacyNoticeVersion'),status:values.get('status'),linkMemberId:values.get('linkMemberId')||undefined,owner:values.get('owner')};if(prospectId)await rpc('adminPatchProspect',{prospectId,patch:lead,reason:values.get('reason')});else await rpc('adminCreateProspect',{prospect:lead,reason:values.get('reason')});document.querySelector('#leadDialog').close();await loadDashboard();await listLeads()}catch(error){setStatus(error.message,true)}}
+    async function listContent(){try{const data=await rpc('adminListContent');state.content=new Map(data.records.map(record=>[record.id,record]));document.querySelector('#listTitle').textContent='投資內容';document.querySelector('#records').innerHTML=data.records.map(record=>`<div class="row"><div><strong>${esc(record.title)}</strong><br><span class="label">${esc(record.type)}・${esc(record.visibility)}・${esc(record.status)}<br>${esc(record.url)}</span></div><button onclick="editContent(${jsArg(record.id)})">編輯</button></div>`).join('')||'目前沒有內容'}catch(error){setStatus(error.message,true)}}
+    function contentOptions(form){form.elements.projectId.innerHTML='<option value="">一般內容</option>'+state.projects.map(project=>`<option value="${esc(project.id)}">${esc(project.displayName||project.id)}</option>`).join('')}
+    function newContent(){const form=document.querySelector('#contentDialog form');form.reset();contentOptions(form);form.elements.visibility.value='member';form.elements.status.value='draft';form.elements.riskNotice.value='內容僅供資訊參考，不構成投資建議。';document.querySelector('#contentDialog').showModal()}
+    function editContent(id){const record=state.content.get(id);if(!record)return;const form=document.querySelector('#contentDialog form');form.reset();contentOptions(form);for(const [key,value] of Object.entries(record))if(form.elements[key]&&key!=='publicSafe')form.elements[key].value=value??'';form.elements.contentId.value=record.id;form.elements.publicSafe.checked=record.publicSafe===true;document.querySelector('#contentDialog').showModal()}
+    async function saveContent(event){event.preventDefault();const values=new FormData(event.currentTarget);try{const contentId=values.get('contentId');const content={type:values.get('type'),title:values.get('title'),summary:values.get('summary'),url:values.get('url'),projectId:values.get('projectId'),visibility:values.get('visibility'),status:values.get('status'),riskNotice:values.get('riskNotice'),publicSafe:values.get('publicSafe')==='on'};if(contentId)await rpc('adminPatchContent',{contentId,patch:content,reason:values.get('reason')});else await rpc('adminCreateContent',{content,reason:values.get('reason')});document.querySelector('#contentDialog').close();await loadDashboard();await listContent()}catch(error){setStatus(error.message,true)}}
+    async function previewDigest(){try{const data=await rpc('adminDigestPreview');document.querySelector('#listTitle').textContent=`每日摘要預覽 ${data.digestDate}`;document.querySelector('#records').innerHTML=data.previews.slice(0,100).map(record=>`<div class="row"><div><strong>${esc(record.memberId)}</strong><br><span class="label">站內內容 ${record.contentItems.length}・媒合 ${record.matches.length}・投資進度 ${record.progress.length}<br>主動管道 ${(record.deliveryChannels||['in_app']).map(esc).join('、')}</span></div></div>`).join('')||'目前沒有可產生摘要的正式會員'}catch(error){setStatus(error.message,true)}}
+    async function generateDigest(){if(!window.confirm('確認產生今日站內摘要，並依明確同意發送 LINE／Email 提示？同日重複執行不會重送。'))return;try{const data=await rpc('adminDigestGenerate',{reason:'營運後台人工產生每日摘要'});setStatus(`摘要 ${data.summary.digestDate}：新增 ${data.summary.created}、既有 ${data.summary.existing}、LINE 排入 ${data.summary.lineQueued}、Email 已提交 ${data.summary.emailSubmitted}、配額延後 ${data.summary.emailDeferred}`);await loadDashboard()}catch(error){setStatus(error.message,true)}}
+    async function exportLeads(){try{const data=await rpc('adminExportProspects',{reason:'管理後台手動匯出潛在投資人名單'});const url=URL.createObjectURL(new Blob([data.csv],{type:data.mimeType}));const anchor=Object.assign(document.createElement('a'),{href:url,download:data.filename});anchor.click();URL.revokeObjectURL(url)}catch(error){setStatus(error.message,true)}}
+    const LEAD_EXPORT_HEADERS=['schemaVersion','id','displayName','phone','email','channel','sourceReference','privacyEvidenceReference','privacyConsentedAt','privacyNoticeVersion','ownerReferrerId','memberId','status','importedBy','importedAt','subscriptionCount','attributableRequestedAmountTwd','attributableAllocatedAmountTwd'];
+    const LEAD_EXPORT_NUMERIC_HEADERS=new Set(['subscriptionCount','attributableRequestedAmountTwd','attributableAllocatedAmountTwd']);
+    function buildProspectWorkbook(data){const xlsx=requireLocalSheetJs();if(!data||data.schemaVersion!=='lead-export-v1'||!Array.isArray(data.headers)||data.headers.length!==LEAD_EXPORT_HEADERS.length||!LEAD_EXPORT_HEADERS.every((header,index)=>data.headers[index]===header)||!Array.isArray(data.rows))throw new Error('Excel 匯出資料契約不正確。');const cells=[LEAD_EXPORT_HEADERS.map(header=>({t:'s',v:header}))];data.rows.forEach(row=>{if(!row||typeof row!=='object'||Object.keys(row).length!==LEAD_EXPORT_HEADERS.length||!LEAD_EXPORT_HEADERS.every(header=>Object.prototype.hasOwnProperty.call(row,header)))throw new Error('Excel 匯出資料列不完整。');cells.push(LEAD_EXPORT_HEADERS.map(header=>{if(LEAD_EXPORT_NUMERIC_HEADERS.has(header)){const value=Number(row[header]);if(!Number.isFinite(value)||value<0)throw new Error('Excel 匯出數值不正確。');return{t:'n',v:value}}return{t:'s',v:String(row[header]??'')}}))});const sheet=xlsx.utils.aoa_to_sheet(cells);const workbook=xlsx.utils.book_new();xlsx.utils.book_append_sheet(workbook,sheet,'潛在投資人');return{xlsx,workbook,filename:String(data.filename||'zhifu-leads.xlsx')}}
+    async function exportLeadsExcel(){try{requireLocalSheetJs();const data=await rpc('adminExportProspectRows',{reason:'管理後台手動匯出潛在投資人 Excel'});const output=buildProspectWorkbook(data);output.xlsx.writeFile(output.workbook,output.filename,{bookType:'xlsx',compression:true});setStatus(`已匯出 ${data.rows.length} 筆 Excel 名單。`)}catch(error){setStatus(error.message,true)}}
+    bootstrap();
+  </script>
+</body>
+</html>
