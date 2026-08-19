@@ -4,16 +4,25 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import {
   AMOUNT_FIELDS,
   DomainError,
+  assertLeadStatusTransition,
   assertTransition,
+  canViewContentItem,
+  captureAcquisitionAttributionSnapshot,
   captureReferralSnapshot,
   canAccessProtectedProject,
   createSubscriptionRecord,
   isReferrerEffective,
   memberProject,
+  normalizeInvestmentPreferences,
+  projectMatches,
   publicProject,
   redactMember,
+  taipeiDate,
   updateCommissionRecord,
   updateSubscriptionRecord,
+  validateContentItem,
+  validateLead,
+  validateNewsletterPreference,
   validateReferrer,
 } from './domain.js';
 import { createSessionManager, parseCookies, requireRole } from './auth.js';
@@ -58,7 +67,8 @@ function gate(c, roles) {
 
 function csvCell(value) {
   const string = value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
-  return `"${string.replaceAll('"', '""')}"`;
+  const safeString = /^[\t ]*[=+@-]/.test(string) ? `'${string}` : string;
+  return `"${safeString.replaceAll('"', '""')}"`;
 }
 
 function toCsv(rows, fields) {
@@ -96,7 +106,7 @@ function enrichedSubscription(subscription, data) {
 function memberSubscription(subscription, data) {
   const visible = enrichedSubscription(subscription, data);
   for (const field of [
-    'referralSnapshot', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd',
+    'acquisitionAttributionSnapshot', 'referralSnapshot', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd',
     'commissionApproval', 'commissionPayment', 'commissionVoidReason',
   ]) delete visible[field];
   return visible;
@@ -126,9 +136,60 @@ function enrichedCommission(subscription, data) {
   };
 }
 
+function enrichedLead(lead, data) {
+  const owner = (data.referrers || []).find((item) => item.id === lead.ownerReferrerId);
+  const subscriptions = data.subscriptions.filter((item) => (
+    item.acquisitionAttributionSnapshot?.leadId === lead.id
+    && item.acquisitionAttributionSnapshot.ownerReferrerId === lead.ownerReferrerId
+  ));
+  return {
+    ...lead,
+    ownerReferrerName: owner?.displayName || null,
+    subscriptionCount: subscriptions.length,
+    attributableRequestedAmountTwd: subscriptions.reduce((sum, item) => sum + item.requestedAmountTwd, 0),
+    attributableAllocatedAmountTwd: subscriptions.reduce((sum, item) => sum + item.allocatedAmountTwd, 0),
+  };
+}
+
+const LEAD_EXPORT_SCHEMA_VERSION = 'lead-export-v1';
+const LEAD_EXPORT_FIELDS = Object.freeze([
+  'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
+  'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
+  'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
+  'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+]);
+
+function leadExportRow(lead, data) {
+  const enriched = enrichedLead(lead, data);
+  return {
+    schemaVersion: LEAD_EXPORT_SCHEMA_VERSION,
+    id: enriched.id,
+    displayName: enriched.displayName || '',
+    phone: enriched.phone || '',
+    email: enriched.email || '',
+    channel: enriched.channel || '',
+    sourceReference: enriched.sourceReference,
+    privacyEvidenceReference: enriched.privacyEvidence?.reference || '',
+    privacyConsentedAt: enriched.privacyEvidence?.consentedAt || '',
+    privacyNoticeVersion: enriched.privacyEvidence?.noticeVersion || '',
+    ownerReferrerId: enriched.ownerReferrerId,
+    memberId: enriched.memberId || '',
+    status: enriched.status,
+    importedBy: enriched.importedBy || '',
+    importedAt: enriched.importedAt || enriched.createdAt || '',
+    subscriptionCount: enriched.subscriptionCount,
+    attributableRequestedAmountTwd: enriched.attributableRequestedAmountTwd,
+    attributableAllocatedAmountTwd: enriched.attributableAllocatedAmountTwd,
+  };
+}
+
 function dashboardOverview(data) {
   const sums = Object.fromEntries(AMOUNT_FIELDS.map((field) => [field, data.subscriptions.reduce((sum, item) => sum + item[field], 0)]));
   const commissions = data.subscriptions.filter((item) => item.referralSnapshot);
+  const leads = data.leads || [];
+  const activeLeads = leads.filter((item) => item.status !== 'archived');
+  const convertedLeads = leads.filter((item) => item.status === 'converted');
+  const leadSubscriptions = data.subscriptions.filter((item) => item.acquisitionAttributionSnapshot?.leadId);
   return {
     memberCount: data.members.length,
     pendingMemberCount: data.members.filter((item) => item.membershipState === 'pending').length,
@@ -146,7 +207,79 @@ function dashboardOverview(data) {
     commissionPaidAmountTwd: commissions
       .filter((item) => item.commissionState === 'paid')
       .reduce((sum, item) => sum + (item.commissionAccruedAmountTwd || 0), 0),
+    leadCount: leads.length,
+    activeLeadCount: activeLeads.length,
+    convertedLeadCount: convertedLeads.length,
+    leadConversionRateBps: activeLeads.length === 0
+      ? 0
+      : Math.floor((convertedLeads.length * 10_000) / activeLeads.length),
+    attributableRequestedAmountTwd: leadSubscriptions.reduce((sum, item) => sum + item.requestedAmountTwd, 0),
+    attributableAllocatedAmountTwd: leadSubscriptions.reduce((sum, item) => sum + item.allocatedAmountTwd, 0),
     ...sums,
+  };
+}
+
+function requiredReason(body, code = 'reason_required') {
+  const reason = String(body?.reason || '').trim();
+  if (!reason) throw new DomainError('reason is required', code, 409);
+  return reason;
+}
+
+function newsletterPreference(data, memberId) {
+  return (data.newsletterPreferences || []).find((item) => item.memberId === memberId) || {
+    memberId,
+    dailyDigestConsent: false,
+    marketingConsent: false,
+    emailDeliveryConsent: false,
+    lineDeliveryConsent: false,
+    deliveryChannels: ['in_app'],
+    updatedAt: null,
+  };
+}
+
+function visibleContent(data, { member = null, publicOnly = false } = {}) {
+  return (data.contentItems || [])
+    .filter((item) => canViewContentItem(item, {
+      member,
+      publicOnly,
+      project: item.projectId ? data.projects.find((project) => project.id === item.projectId) : null,
+    }))
+    .sort((left, right) => Date.parse(right.publishedAt) - Date.parse(left.publishedAt) || left.id.localeCompare(right.id));
+}
+
+function memberMatches(data, member, now = new Date().toISOString()) {
+  return projectMatches({
+    subject: member,
+    member,
+    projects: data.projects,
+    now,
+  });
+}
+
+function leadMatches(data, lead, now = new Date().toISOString()) {
+  const member = lead.memberId ? data.members.find((item) => item.id === lead.memberId) : null;
+  return projectMatches({ subject: lead, member, projects: data.projects, now });
+}
+
+function digestForMember(data, member, date = taipeiDate()) {
+  const subscriptions = data.subscriptions.filter((item) => item.memberId === member.id);
+  return {
+    memberId: member.id,
+    date,
+    investmentProgress: {
+      subscriptionCount: subscriptions.length,
+      requestedAmountTwd: subscriptions.reduce((sum, item) => sum + item.requestedAmountTwd, 0),
+      approvedAmountTwd: subscriptions.reduce((sum, item) => sum + item.approvedAmountTwd, 0),
+      depositPaidAmountTwd: subscriptions.reduce((sum, item) => sum + item.receivedAmountTwd, 0),
+      accountRecordedAmountTwd: subscriptions.reduce(
+        (sum, item) => sum + Math.max(0, item.receivedAmountTwd - item.refundedAmountTwd),
+        0,
+      ),
+      allocatedAmountTwd: subscriptions.reduce((sum, item) => sum + item.allocatedAmountTwd, 0),
+      items: subscriptions.map((item) => memberSubscription(item, data)),
+    },
+    contentItems: visibleContent(data, { member }),
+    matchedProjects: memberMatches(data, member).filter((item) => item.eligible),
   };
 }
 
@@ -211,6 +344,9 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const notification = await store.mutate(async (draft) => {
       const record = draft.notifications.find((item) => item.id === notificationId);
       if (!record) throw new DomainError('Notification was not found', 'notification_not_found', 404);
+      if (record.channel && record.channel !== 'line') {
+        throw new DomainError('Only LINE outbox records can be sent by the LINE notification worker', 'notification_channel_not_sendable', 409);
+      }
       if (record.status === 'sent') return record;
       if (!force && (record.status === 'awaiting_confirmation' || record.attempts >= NOTIFICATION_MAX_ATTEMPTS)) return record;
       record.status = 'sending';
@@ -282,6 +418,147 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
       metadata,
     })));
   };
+
+  function requireReferrerRecord(draft, value) {
+    const key = String(value || '').trim();
+    const referrer = (draft.referrers || []).find((item) => item.id === key || item.code === key.toUpperCase());
+    if (!referrer) throw new DomainError('Lead owner referrer was not found', 'referrer_not_found', 404);
+    return referrer;
+  }
+
+  function resolveReferrer(draft, value, now) {
+    const referrer = requireReferrerRecord(draft, value);
+    if (!isReferrerEffective(referrer, now)) {
+      throw new DomainError('Lead owner referrer must be active and effective', 'referrer_not_effective', 409);
+    }
+    return referrer;
+  }
+
+  async function linkLeadMember(draft, lead, memberId, actor, reason, now) {
+    const member = draft.members.find((item) => item.id === memberId);
+    if (!member) throw new DomainError('Member was not found', 'member_not_found', 404);
+    if (lead.status === 'archived') throw new DomainError('Archived leads cannot be linked', 'lead_archived', 409);
+    if (lead.memberId === member.id && member.leadOwnerAttribution?.leadId === lead.id) return;
+    if (lead.memberId && lead.memberId !== member.id) {
+      throw new DomainError('A converted lead cannot be linked to another member', 'lead_member_locked', 409);
+    }
+    if (member.leadOwnerAttribution && member.leadOwnerAttribution.leadId !== lead.id) {
+      throw new DomainError('Member already has an immutable lead owner', 'member_lead_owner_locked', 409);
+    }
+    const verified = member.referralAttribution?.state === 'verified' ? member.referralAttribution : null;
+    if (verified && verified.referrerId !== lead.ownerReferrerId) {
+      throw new DomainError('Verified member referrer conflicts with the lead owner', 'lead_referrer_conflict', 409);
+    }
+    const referrer = requireReferrerRecord(draft, lead.ownerReferrerId);
+    const beforeMember = structuredClone(member);
+    const beforeLead = structuredClone(lead);
+    member.leadOwnerAttribution ||= {
+      leadId: lead.id,
+      referrerId: referrer.id,
+      referralCode: referrer.code,
+      sourceReference: lead.sourceReference,
+      evidenceReference: lead.privacyEvidence.reference,
+      linkedAt: now,
+      linkedBy: actor.id,
+    };
+    if (!verified) {
+      member.referralAttribution = {
+        referrerId: referrer.id,
+        referralCode: referrer.code,
+        state: 'verified',
+        evidenceReference: lead.privacyEvidence.reference,
+        claimedAt: member.referralAttribution?.claimedAt || now,
+        verifiedAt: now,
+        verifiedBy: actor.id,
+      };
+    }
+    member.updatedAt = now;
+    lead.memberId = member.id;
+    lead.status = 'converted';
+    lead.convertedAt ||= now;
+    lead.updatedAt = now;
+    await store.appendAudit(draft, {
+      entityType: 'lead', entityId: lead.id, action: 'lead.member_linked', actor,
+      before: beforeLead, after: lead, reason,
+    });
+    await store.appendAudit(draft, {
+      entityType: 'member', entityId: member.id, action: 'member.lead_owner_linked', actor,
+      before: beforeMember, after: member, reason,
+    });
+  }
+
+  async function createLead(draft, input, actor, reason, inheritedEvidence = null) {
+    const now = new Date().toISOString();
+    const candidate = {
+      ...input,
+      privacyEvidence: input.privacyEvidence || input.sourceEvidence || inheritedEvidence,
+    };
+    const normalized = validateLead(candidate, { now });
+    const owner = resolveReferrer(draft, normalized.ownerReferrerId, now);
+    normalized.ownerReferrerId = owner.id;
+    draft.leads ||= [];
+    const phoneKey = normalized.phone.replace(/[^0-9+]/g, '');
+    const duplicateContact = draft.leads.find((item) => (
+      (normalized.email && String(item.email || '').toLowerCase() === normalized.email)
+      || (phoneKey && String(item.phone || '').replace(/[^0-9+]/g, '') === phoneKey)
+    ));
+    if (duplicateContact) {
+      if (duplicateContact.ownerReferrerId !== normalized.ownerReferrerId) {
+        throw new DomainError('Lead contact is already owned by another referrer', 'lead_owner_conflict', 409);
+      }
+      throw new DomainError('Lead contact already exists', 'duplicate_lead_contact', 409);
+    }
+    const requestedMemberId = input.memberId || input.linkMemberId || null;
+    if (normalized.status === 'converted' && !requestedMemberId) {
+      throw new DomainError('A converted lead requires a linked member', 'lead_member_required', 409);
+    }
+    const record = {
+      id: `lead-${randomUUID()}`,
+      demo: false,
+      ...normalized,
+      memberId: null,
+      convertedAt: null,
+      importedBy: actor.id,
+      importedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (requestedMemberId) record.status = 'new';
+    draft.leads.push(record);
+    await store.appendAudit(draft, {
+      entityType: 'lead', entityId: record.id, action: 'lead.created', actor,
+      before: null, after: record, reason,
+    });
+    if (requestedMemberId) await linkLeadMember(draft, record, requestedMemberId, actor, reason, now);
+    return record;
+  }
+
+  async function enqueueDigestOutbox(draft, digest, member, channel, actor) {
+    const now = new Date().toISOString();
+    const record = {
+      id: `notification-${randomUUID()}`,
+      memberId: member.id,
+      lineUserId: channel === 'line' ? member.lineUserId : null,
+      channel,
+      eventType: 'daily_digest.generated',
+      message: `今日摘要已更新，請登入查看：${new URL('/member.html#digest', origin).toString()}`,
+      templateVersion: 1,
+      metadata: { digestId: digest.id, date: digest.date },
+      status: 'outbox',
+      attempts: 0,
+      lastError: null,
+      providerResponse: null,
+      autoDelivery: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    draft.notifications.push(record);
+    await store.appendAudit(draft, {
+      entityType: 'notification', entityId: record.id, action: 'digest.delivery_queued', actor,
+      before: null, after: record, reason: `Daily digest ${channel} delivery`,
+    });
+    return record;
+  }
 
   app.onError((caught, c) => {
     if (caught instanceof DomainError) return error(c, caught.status, caught.code, caught.message);
@@ -402,7 +679,8 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         id: `member-${randomUUID()}`, demo: false, displayName, legalName: '', phone: '', email: '', lineUserId,
         lineFriendshipState: 'unknown', sourceGroup: '', membershipState: 'pending',
         qualificationState: 'not_applied', qualificationApproval: null, tier: 'free', projectAccess: [],
-        referralAttribution: null,
+        referralAttribution: null, leadOwnerAttribution: null,
+        investmentPreferences: { industries: [], ticketMinTwd: 0, ticketMaxTwd: Number.MAX_SAFE_INTEGER },
         createdAt: now, updatedAt: now,
       };
       draft.members.push(found);
@@ -438,6 +716,78 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     if (session?.role === ADMIN_ROLE) return c.json({ ok: true, project, data: project });
     const visible = memberProject(project, sessionMember(c, data));
     return c.json({ ok: true, project: visible, data: visible });
+  });
+
+  const contentFeedHandler = (c) => {
+    const data = store.snapshot();
+    const member = sessionMember(c, data);
+    const items = visibleContent(data, { member, publicOnly: !member });
+    return c.json({ ok: true, contentItems: items, data: items });
+  };
+  app.get('/api/content', contentFeedHandler);
+  app.get('/api/content/feed', contentFeedHandler);
+  app.get('/api/content/public', (c) => {
+    const items = visibleContent(store.snapshot(), { publicOnly: true });
+    return c.json({ ok: true, contentItems: items, data: items });
+  });
+
+  const memberMatchesHandler = (c) => {
+    const denied = gate(c, ['member']);
+    if (denied) return denied;
+    const data = store.snapshot();
+    const member = sessionMember(c, data);
+    if (!member) return error(c, 404, 'member_not_found', 'Member was not found');
+    const matches = memberMatches(data, member).filter((item) => item.eligible);
+    return c.json({ ok: true, matches, data: matches });
+  };
+  app.get('/api/project-matches', memberMatchesHandler);
+  app.get('/api/matches', memberMatchesHandler);
+
+  const getNewsletterPreference = (c) => {
+    const denied = gate(c, ['member']);
+    if (denied) return denied;
+    const preference = newsletterPreference(store.snapshot(), c.get('session').memberId);
+    return c.json({ ok: true, preference, data: preference });
+  };
+  app.get('/api/newsletter/preferences', getNewsletterPreference);
+  app.get('/api/newsletter-preferences', getNewsletterPreference);
+
+  const patchNewsletterPreference = async (c) => {
+    const denied = gate(c, ['member']);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const preference = await store.mutate(async (draft) => {
+      draft.newsletterPreferences ||= [];
+      const memberId = c.get('session').memberId;
+      const member = draft.members.find((item) => item.id === memberId);
+      if (!member) throw new DomainError('Member was not found', 'member_not_found', 404);
+      const index = draft.newsletterPreferences.findIndex((item) => item.memberId === memberId);
+      const current = index >= 0 ? draft.newsletterPreferences[index] : newsletterPreference(draft, memberId);
+      const normalized = validateNewsletterPreference(body, current);
+      const now = new Date().toISOString();
+      const next = { memberId, ...normalized, updatedAt: now };
+      if (index >= 0) draft.newsletterPreferences[index] = next;
+      else draft.newsletterPreferences.push(next);
+      await store.appendAudit(draft, {
+        entityType: 'newsletter_preference', entityId: memberId, action: 'newsletter_preference.updated',
+        actor: actorFrom(c), before: current, after: next, reason: 'Member updated newsletter preferences',
+      });
+      return next;
+    });
+    return c.json({ ok: true, preference, data: preference });
+  };
+  app.patch('/api/newsletter/preferences', patchNewsletterPreference);
+  app.patch('/api/newsletter-preferences', patchNewsletterPreference);
+
+  app.get('/api/digest/today', (c) => {
+    const denied = gate(c, ['member']);
+    if (denied) return denied;
+    const data = store.snapshot();
+    const member = sessionMember(c, data);
+    const date = taipeiDate();
+    const stored = (data.dailyDigests || []).find((item) => item.memberId === member.id && item.date === date) || null;
+    const digest = stored || digestForMember(data, member, date);
+    return c.json({ ok: true, digest, generated: Boolean(stored), data: digest });
   });
 
   app.post('/api/activation', async (c) => {
@@ -615,6 +965,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         riskAcknowledged: true,
         riskAcknowledgedAt: now,
         riskDisclosureVersion: 'draft-0.1-2026-08-18',
+        acquisitionAttributionSnapshot: captureAcquisitionAttributionSnapshot(member, now),
         referralSnapshot: captureReferralSnapshot(member, draft.referrers || [], now),
         now,
       });
@@ -742,7 +1093,14 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         commissionAccruedAmountTwd: overview.commissionAccruedAmountTwd,
         commissionApprovedAmountTwd: overview.commissionApprovedAmountTwd,
         commissionPaidAmountTwd: overview.commissionPaidAmountTwd,
+        leadCount: overview.leadCount,
+        activeLeadCount: overview.activeLeadCount,
+        convertedLeadCount: overview.convertedLeadCount,
+        leadConversionRateBps: overview.leadConversionRateBps,
+        attributableRequestedAmountTwd: overview.attributableRequestedAmountTwd,
+        attributableAllocatedAmountTwd: overview.attributableAllocatedAmountTwd,
       },
+      leads: (data.leads || []).map((item) => enrichedLead(item, data)),
       referrers: data.referrers || [],
       members: data.members.map((item) => enrichedMember(item, data)),
       subscriptions: data.subscriptions.map((item) => enrichedSubscription(item, data)),
@@ -753,6 +1111,369 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     };
     return c.json({ ok: true, dashboard, data: dashboard });
   });
+
+  app.get('/api/admin/leads', (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const status = c.req.query('status');
+    const data = store.snapshot();
+    const leads = (data.leads || []).filter((item) => !status || item.status === status)
+      .map((item) => enrichedLead(item, data));
+    return c.json({ ok: true, leads, data: leads });
+  });
+
+  app.get('/api/admin/leads/:id', (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const data = store.snapshot();
+    const found = (data.leads || []).find((item) => item.id === c.req.param('id'));
+    const lead = found ? enrichedLead(found, data) : null;
+    if (!lead) return error(c, 404, 'lead_not_found', 'Lead was not found');
+    return c.json({ ok: true, lead, data: lead });
+  });
+
+  app.post('/api/admin/leads', async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'lead_reason_required');
+    const lead = await store.mutate((draft) => createLead(draft, body, actorFrom(c), reason));
+    return c.json({ ok: true, lead, data: lead }, 201);
+  });
+
+  const importLeadsHandler = async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'lead_reason_required');
+    const rows = body.leads || body.rows;
+    if (!Array.isArray(rows) || rows.length === 0 || rows.length > 500) {
+      return error(c, 400, 'invalid_lead_import', 'leads or rows must contain 1 to 500 records');
+    }
+    const leads = await store.mutate(async (draft) => {
+      const created = [];
+      for (const row of rows) {
+        created.push(await createLead(draft, bodyObject(row), actorFrom(c), reason, body.sourceEvidence));
+      }
+      return created;
+    });
+    return c.json({ ok: true, leads, importedCount: leads.length, data: leads }, 201);
+  };
+  app.post('/api/admin/leads/import', importLeadsHandler);
+  app.post('/api/admin/leads/import-json', importLeadsHandler);
+
+  app.patch('/api/admin/leads/:id', async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'lead_reason_required');
+    const lead = await store.mutate(async (draft) => {
+      const current = (draft.leads || []).find((item) => item.id === c.req.param('id'));
+      if (!current) throw new DomainError('Lead was not found', 'lead_not_found', 404);
+      const now = new Date().toISOString();
+      if (body.ownerReferrerId !== undefined || body.owner !== undefined) {
+        const requestedOwner = resolveReferrer(draft, body.ownerReferrerId || body.owner, now);
+        if (requestedOwner.id !== current.ownerReferrerId) {
+          throw new DomainError('Lead owner attribution is immutable', 'lead_owner_locked', 409);
+        }
+      }
+      if (body.sourceReference !== undefined || body.source !== undefined
+        || body.privacyEvidence !== undefined || body.sourceEvidence !== undefined) {
+        throw new DomainError('Lead source and privacy evidence are immutable', 'lead_evidence_locked', 409);
+      }
+      const before = structuredClone(current);
+      const contact = body.contact && typeof body.contact === 'object' ? body.contact : {};
+      const candidate = {
+        ...current,
+        ...body,
+        ownerReferrerId: current.ownerReferrerId,
+        sourceReference: current.sourceReference,
+        privacyEvidence: current.privacyEvidence,
+        displayName: body.displayName ?? body.name ?? contact.name ?? current.displayName,
+        phone: body.phone ?? contact.phone ?? (
+          typeof body.contact === 'string' && !body.contact.includes('@') ? body.contact : current.phone
+        ),
+        email: body.email ?? contact.email ?? (
+          typeof body.contact === 'string' && body.contact.includes('@') ? body.contact : current.email
+        ),
+        investmentPreferences: body.investmentPreferences || (
+          body.industries !== undefined || body.industryPreferences !== undefined || body.ticketMinTwd !== undefined || body.ticketMaxTwd !== undefined
+            ? body : current.investmentPreferences
+        ),
+      };
+      const normalized = validateLead(candidate, { now });
+      assertLeadStatusTransition(current.status, normalized.status);
+      const memberId = body.memberId || body.linkMemberId;
+      if (normalized.status === 'converted' && !current.memberId && !memberId) {
+        throw new DomainError('A converted lead requires a linked member', 'lead_member_required', 409);
+      }
+      if (current.memberId && normalized.status !== 'converted' && normalized.status !== 'archived') {
+        throw new DomainError('A linked lead cannot leave converted status', 'lead_member_locked', 409);
+      }
+      Object.assign(current, normalized, { updatedAt: now });
+      if ((body.memberId === null || body.linkMemberId === null) && current.memberId) {
+        throw new DomainError('A converted lead cannot be unlinked', 'lead_member_locked', 409);
+      }
+      await store.appendAudit(draft, {
+        entityType: 'lead', entityId: current.id, action: 'lead.updated', actor: actorFrom(c),
+        before, after: current, reason,
+      });
+      if (memberId) await linkLeadMember(draft, current, memberId, actorFrom(c), reason, now);
+      return current;
+    });
+    return c.json({ ok: true, lead, data: lead });
+  });
+
+  app.delete('/api/admin/leads/:id', async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'lead_reason_required');
+    const lead = await store.mutate(async (draft) => {
+      const current = (draft.leads || []).find((item) => item.id === c.req.param('id'));
+      if (!current) throw new DomainError('Lead was not found', 'lead_not_found', 404);
+      const before = structuredClone(current);
+      assertLeadStatusTransition(current.status, 'archived');
+      current.status = 'archived';
+      current.updatedAt = new Date().toISOString();
+      await store.appendAudit(draft, {
+        entityType: 'lead', entityId: current.id, action: 'lead.archived', actor: actorFrom(c),
+        before, after: current, reason,
+      });
+      return current;
+    });
+    return c.json({ ok: true, lead, data: lead });
+  });
+
+  const adminContentListHandler = (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const contentItems = store.snapshot().contentItems || [];
+    return c.json({ ok: true, contentItems, data: contentItems });
+  };
+  app.get('/api/admin/content', adminContentListHandler);
+  app.get('/api/admin/content-items', adminContentListHandler);
+
+  const adminContentGetHandler = (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const item = (store.snapshot().contentItems || []).find((entry) => entry.id === c.req.param('id'));
+    if (!item) return error(c, 404, 'content_not_found', 'Content item was not found');
+    return c.json({ ok: true, contentItem: item, data: item });
+  };
+  app.get('/api/admin/content/:id', adminContentGetHandler);
+  app.get('/api/admin/content-items/:id', adminContentGetHandler);
+
+  const adminContentCreateHandler = async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'content_reason_required');
+    const contentItem = await store.mutate(async (draft) => {
+      const now = new Date().toISOString();
+      const normalized = validateContentItem(body, { now });
+      if (normalized.projectId && !draft.projects.some((item) => item.id === normalized.projectId)) {
+        throw new DomainError('Project was not found', 'project_not_found', 404);
+      }
+      if (normalized.type === 'project_update' && !normalized.projectId) {
+        throw new DomainError('project_update requires projectId', 'content_project_required', 409);
+      }
+      const record = {
+        id: `content-${randomUUID()}`, demo: false, ...normalized, createdAt: now, updatedAt: now,
+      };
+      draft.contentItems ||= [];
+      draft.contentItems.push(record);
+      await store.appendAudit(draft, {
+        entityType: 'content_item', entityId: record.id, action: 'content.created', actor: actorFrom(c),
+        before: null, after: record, reason,
+      });
+      return record;
+    });
+    return c.json({ ok: true, contentItem, data: contentItem }, 201);
+  };
+  app.post('/api/admin/content', adminContentCreateHandler);
+  app.post('/api/admin/content-items', adminContentCreateHandler);
+
+  const adminContentPatchHandler = async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'content_reason_required');
+    const contentItem = await store.mutate(async (draft) => {
+      const index = (draft.contentItems || []).findIndex((item) => item.id === c.req.param('id'));
+      if (index < 0) throw new DomainError('Content item was not found', 'content_not_found', 404);
+      const before = structuredClone(draft.contentItems[index]);
+      if (before.archivedAt) throw new DomainError('Archived content cannot be republished', 'content_archived', 409);
+      const now = new Date().toISOString();
+      const candidate = {
+        ...before,
+        ...body,
+        videoUrl: body.videoUrl ?? (body.type === 'video' ? body.url : undefined) ?? before.videoUrl,
+        riskDisclosure: body.riskDisclosure ?? body.riskNotice ?? before.riskDisclosure,
+      };
+      if (body.status === 'published' && before.status !== 'published' && body.publishedAt === undefined) {
+        candidate.publishedAt = now;
+      }
+      const normalized = validateContentItem(candidate, { now });
+      if (normalized.projectId && !draft.projects.some((item) => item.id === normalized.projectId)) {
+        throw new DomainError('Project was not found', 'project_not_found', 404);
+      }
+      if (normalized.type === 'project_update' && !normalized.projectId) {
+        throw new DomainError('project_update requires projectId', 'content_project_required', 409);
+      }
+      const next = { ...before, ...normalized, updatedAt: now };
+      draft.contentItems[index] = next;
+      await store.appendAudit(draft, {
+        entityType: 'content_item', entityId: next.id, action: 'content.updated', actor: actorFrom(c),
+        before, after: next, reason,
+      });
+      return next;
+    });
+    return c.json({ ok: true, contentItem, data: contentItem });
+  };
+  app.patch('/api/admin/content/:id', adminContentPatchHandler);
+  app.patch('/api/admin/content-items/:id', adminContentPatchHandler);
+
+  const adminContentDeleteHandler = async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'content_reason_required');
+    const removed = await store.mutate(async (draft) => {
+      const index = (draft.contentItems || []).findIndex((item) => item.id === c.req.param('id'));
+      if (index < 0) throw new DomainError('Content item was not found', 'content_not_found', 404);
+      const item = draft.contentItems[index];
+      const before = structuredClone(item);
+      const now = new Date().toISOString();
+      item.status = 'draft';
+      item.publishedAt = null;
+      item.archivedAt = now;
+      item.updatedAt = now;
+      await store.appendAudit(draft, {
+        entityType: 'content_item', entityId: item.id, action: 'content.archived', actor: actorFrom(c),
+        before, after: item, reason,
+      });
+      return item;
+    });
+    return c.json({ ok: true, contentItem: removed, data: removed });
+  };
+  app.delete('/api/admin/content/:id', adminContentDeleteHandler);
+  app.delete('/api/admin/content-items/:id', adminContentDeleteHandler);
+
+  const adminMatchesHandler = (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const data = store.snapshot();
+    const leadId = c.req.query('leadId');
+    const memberId = c.req.query('memberId');
+    if (leadId) {
+      const lead = (data.leads || []).find((item) => item.id === leadId);
+      if (!lead) return error(c, 404, 'lead_not_found', 'Lead was not found');
+      const result = { subjectType: 'lead', subjectId: lead.id, matches: leadMatches(data, lead) };
+      return c.json({ ok: true, ...result, data: result });
+    }
+    if (memberId) {
+      const member = data.members.find((item) => item.id === memberId);
+      if (!member) return error(c, 404, 'member_not_found', 'Member was not found');
+      const result = { subjectType: 'member', subjectId: member.id, matches: memberMatches(data, member) };
+      return c.json({ ok: true, ...result, data: result });
+    }
+    const result = {
+      leads: (data.leads || []).map((lead) => ({ leadId: lead.id, matches: leadMatches(data, lead) })),
+      members: data.members.map((member) => ({ memberId: member.id, matches: memberMatches(data, member) })),
+    };
+    return c.json({ ok: true, matches: result, data: result });
+  };
+  app.get('/api/admin/project-matches', adminMatchesHandler);
+  app.get('/api/admin/matches', adminMatchesHandler);
+
+  function validateDigestDate(value) {
+    const date = String(value || taipeiDate());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(`${date}T00:00:00.000Z`))) {
+      throw new DomainError('date must use YYYY-MM-DD', 'invalid_digest_date');
+    }
+    return date;
+  }
+
+  const digestPreviewForRequest = (c, input = {}) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const data = store.snapshot();
+    const date = validateDigestDate(input.date || c.req.query('date'));
+    const requestedMemberId = input.memberId || c.req.query('memberId');
+    const members = requestedMemberId
+      ? data.members.filter((item) => item.id === requestedMemberId)
+      : data.members;
+    if (requestedMemberId && members.length === 0) return error(c, 404, 'member_not_found', 'Member was not found');
+    const previews = members.map((member) => ({
+      ...digestForMember(data, member, date),
+      preference: newsletterPreference(data, member.id),
+    }));
+    return c.json({ ok: true, previews, data: previews });
+  };
+  app.get('/api/admin/newsletters/preview', (c) => digestPreviewForRequest(c));
+  app.get('/api/admin/daily-digests/preview', (c) => digestPreviewForRequest(c));
+  const digestPreviewPostHandler = async (c) => digestPreviewForRequest(c, await jsonBody(c));
+  app.post('/api/admin/newsletters/preview', digestPreviewPostHandler);
+  app.post('/api/admin/daily-digests/preview', digestPreviewPostHandler);
+
+  const digestGenerateHandler = async (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const body = await jsonBody(c);
+    const reason = requiredReason(body, 'digest_reason_required');
+    const date = validateDigestDate(body.date);
+    const result = await store.mutate(async (draft) => {
+      draft.dailyDigests ||= [];
+      const requestedIds = Array.isArray(body.memberIds)
+        ? [...new Set(body.memberIds.map(String))]
+        : body.memberId ? [String(body.memberId)] : null;
+      const members = requestedIds
+        ? requestedIds.map((id) => draft.members.find((item) => item.id === id))
+        : draft.members;
+      if (members.some((item) => !item)) throw new DomainError('Member was not found', 'member_not_found', 404);
+      const generated = [];
+      const queued = [];
+      for (const member of members) {
+        let digest = draft.dailyDigests.find((item) => item.memberId === member.id && item.date === date);
+        if (!digest) {
+          const now = new Date().toISOString();
+          digest = {
+            id: `digest-${randomUUID()}`,
+            ...digestForMember(draft, member, date),
+            deliveryChannels: ['in_app'],
+            generatedAt: now,
+          };
+          draft.dailyDigests.push(digest);
+          await store.appendAudit(draft, {
+            entityType: 'daily_digest', entityId: digest.id, action: 'digest.generated', actor: actorFrom(c),
+            before: null, after: digest, reason,
+          });
+        }
+        generated.push(digest);
+        const preference = newsletterPreference(draft, member.id);
+        if (preference.dailyDigestConsent && body.send !== false) {
+          const channels = [...new Set(preference.deliveryChannels)].filter((channel) => (
+            (channel === 'line' && preference.lineDeliveryConsent && member.lineUserId)
+            || (channel === 'email' && preference.emailDeliveryConsent && member.email)
+          ));
+          for (const channel of channels) {
+            const existing = draft.notifications.find((item) => (
+              item.eventType === 'daily_digest.generated'
+              && item.memberId === member.id
+              && item.channel === channel
+              && item.metadata?.date === date
+            ));
+            if (!existing) queued.push(await enqueueDigestOutbox(draft, digest, member, channel, actorFrom(c)));
+          }
+        }
+      }
+      return { generated, queued, skippedExternalDeliveryCount: members.length - new Set(queued.map((item) => item.memberId)).size };
+    });
+    return c.json({ ok: true, ...result, data: result }, 201);
+  };
+  app.post('/api/admin/newsletters/generate', digestGenerateHandler);
+  app.post('/api/admin/daily-digests/generate', digestGenerateHandler);
 
   app.get('/api/admin/referrers', (c) => {
     const denied = gate(c, [ADMIN_ROLE]);
@@ -903,6 +1624,12 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
         member.projectAccess = [...new Set(body.projectAccess.filter((id) => draft.projects.some((item) => item.id === id)))];
       }
       if (body.referralAttribution !== undefined) {
+        if (member.leadOwnerAttribution && (
+          body.referralAttribution === null
+          || body.referralAttribution?.referrerId !== member.leadOwnerAttribution.referrerId
+        )) {
+          throw new DomainError('Lead owner attribution is immutable', 'lead_owner_locked', 409);
+        }
         if (body.referralAttribution === null) {
           member.referralAttribution = null;
         } else {
@@ -929,6 +1656,9 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
             verifiedBy: actorFrom(c).id,
           };
         }
+      }
+      if (body.investmentPreferences !== undefined) {
+        member.investmentPreferences = normalizeInvestmentPreferences(body.investmentPreferences);
       }
       if (body.tier !== undefined) member.tier = String(body.tier);
       member.updatedAt = new Date().toISOString();
@@ -1112,15 +1842,19 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const fields = resource === 'members'
       ? ['id', 'displayName', 'phone', 'email', 'membershipState', 'qualificationState', 'tier', 'sourceGroup', 'referrerName', 'referralAttribution', 'updatedAt']
       : resource === 'subscriptions'
-        ? ['id', 'memberId', 'projectId', 'subscriptionState', 'fundingState', 'allocationState', ...AMOUNT_FIELDS, 'referralSnapshot', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd', 'updatedAt']
+        ? ['id', 'memberId', 'projectId', 'subscriptionState', 'fundingState', 'allocationState', ...AMOUNT_FIELDS, 'acquisitionAttributionSnapshot', 'referralSnapshot', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd', 'updatedAt']
         : resource === 'referrers'
           ? ['id', 'code', 'displayName', 'legalName', 'contactName', 'contactEmail', 'status', 'defaultCommissionRateBps', 'commissionBasis', 'agreementReference', 'effectiveAt', 'expiresAt', 'createdAt', 'updatedAt']
           : resource === 'commissions'
             ? ['id', 'memberId', 'projectId', 'referrerId', 'referrerName', 'referralCode', 'commissionRateBps', 'commissionBasis', 'agreementReference', 'commissionState', 'commissionBasisAmountTwd', 'commissionAccruedAmountTwd', 'commissionApproval', 'commissionPayment', 'commissionVoidReason', 'updatedAt']
-            : null;
-    if (!fields) return error(c, 404, 'export_not_found', 'Supported exports are members, subscriptions, referrers and commissions');
+            : resource === 'leads'
+              ? LEAD_EXPORT_FIELDS
+              : null;
+    if (!fields) return error(c, 404, 'export_not_found', 'Supported exports are members, subscriptions, referrers, commissions and leads');
     const rows = resource === 'members'
       ? data.members.map((item) => enrichedMember(item, data))
+      : resource === 'leads'
+        ? (data.leads || []).map((item) => leadExportRow(item, data))
       : resource === 'commissions'
         ? data.subscriptions.filter((item) => item.referralSnapshot).map((item) => ({
           ...item,

@@ -32,10 +32,16 @@ type RouteMatch = {
 const fixedRoutes = new Map<string, RouteMatch>([
   ['GET /api/projects', { operation: 'listProjects', access: 'public' }],
   ['POST /api/activation', { operation: 'createActivation', access: 'member' }],
-  ['GET /api/bookings', { operation: 'adminList', access: 'admin', params: { resource: 'bookings' } }],
+  ['GET /api/bookings', { operation: 'listBookings', access: 'member' }],
   ['POST /api/bookings', { operation: 'createBooking', access: 'public' }],
   ['GET /api/subscriptions', { operation: 'listSubscriptions', access: 'member' }],
   ['POST /api/subscriptions', { operation: 'createSubscription', access: 'member' }],
+  ['GET /api/newsletter/preferences', { operation: 'getNewsletterPreferences', access: 'member' }],
+  ['PATCH /api/newsletter/preferences', { operation: 'patchNewsletterPreferences', access: 'member' }],
+  ['GET /api/digest/today', { operation: 'getDailyDigest', access: 'member' }],
+  ['GET /api/matches', { operation: 'listMatches', access: 'member' }],
+  ['GET /api/content/feed', { operation: 'listContentFeed', access: 'member' }],
+  ['GET /api/content/public', { operation: 'listPublicContent', access: 'public' }],
   ['GET /api/admin/dashboard', { operation: 'adminDashboard', access: 'admin' }],
   ['GET /api/admin/overview', { operation: 'adminDashboard', access: 'admin' }],
   ['GET /api/admin/members', { operation: 'adminList', access: 'admin', params: { resource: 'members' } }],
@@ -49,6 +55,15 @@ const fixedRoutes = new Map<string, RouteMatch>([
   ['POST /api/admin/notifications', { operation: 'adminCreateBulkNotification', access: 'admin' }],
   ['POST /api/admin/notifications/process', { operation: 'adminProcessNotifications', access: 'admin' }],
   ['GET /api/admin/audits', { operation: 'adminList', access: 'admin', params: { resource: 'audits' } }],
+  ['GET /api/admin/leads', { operation: 'adminListProspects', access: 'admin' }],
+  ['POST /api/admin/leads', { operation: 'adminCreateProspect', access: 'admin' }],
+  ['POST /api/admin/leads/import', { operation: 'adminImportProspects', access: 'admin' }],
+  ['GET /api/admin/matches', { operation: 'adminListMatches', access: 'admin' }],
+  ['GET /api/admin/content', { operation: 'adminListContent', access: 'admin' }],
+  ['POST /api/admin/content', { operation: 'adminCreateContent', access: 'admin' }],
+  ['GET /api/admin/newsletters/preview', { operation: 'adminDigestPreview', access: 'admin' }],
+  ['POST /api/admin/newsletters/generate', { operation: 'adminDigestGenerate', access: 'admin' }],
+  ['GET /api/admin/export/leads.csv', { operation: 'adminExportProspects', access: 'admin' }],
   ['GET /api/admin/exports/members.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'members' } }],
   ['GET /api/admin/exports/subscriptions.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'subscriptions' } }],
   ['GET /api/admin/exports/referrers.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'referrers' } }],
@@ -70,6 +85,8 @@ function matchProxyRoute(method: string, pathname: string): RouteMatch | null {
     ['PATCH', /^\/api\/admin\/referrers\/([^/]+)$/, 'adminPatchReferrer', 'admin', ['referrerId']],
     ['PATCH', /^\/api\/admin\/commissions\/([^/]+)$/, 'adminPatchCommission', 'admin', ['subscriptionId']],
     ['POST', /^\/api\/admin\/notifications\/([^/]+)\/send$/, 'adminApproveNotification', 'admin', ['notificationId']],
+    ['PATCH', /^\/api\/admin\/leads\/([^/]+)$/, 'adminPatchProspect', 'admin', ['prospectId']],
+    ['PATCH', /^\/api\/admin\/content\/([^/]+)$/, 'adminPatchContent', 'admin', ['contentId']],
   ];
   for (const [expectedMethod, pattern, operation, access, names] of patterns) {
     if (method !== expectedMethod) continue;
@@ -141,6 +158,56 @@ function canAccess(required: RouteMatch['access'], session: Session | null): boo
   return session.role === 'admin' || (session.role === 'member' && Boolean(session.memberId?.trim()));
 }
 
+function optionalText(value: unknown): string | undefined {
+  const normalized = String(value ?? '').trim();
+  return normalized || undefined;
+}
+
+function prospectChannel(value: unknown): string {
+  const original = String(value ?? '').normalize('NFKC').trim();
+  const normalized = original.toLowerCase().replace(/[\s_-]+/g, '');
+  if (normalized === 'line') return 'line';
+  if (normalized.includes('openchat')) return 'openchat';
+  if (normalized === 'email' || normalized.includes('電子郵件') || normalized.includes('信箱')) return 'email';
+  if (normalized === 'phone' || normalized.includes('電話') || normalized.includes('手機')) return 'phone';
+  if (normalized.includes('line') || normalized.includes('community') || normalized.includes('社群') || normalized.includes('群組')) return 'community';
+  return 'other';
+}
+
+function privacyEvidence(value: Record<string, unknown>, inheritedReference?: unknown): Record<string, unknown> {
+  const raw = value.privacyEvidence;
+  const existing = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  return {
+    reference: optionalText(existing.reference ?? value.privacyEvidenceReference ?? inheritedReference ?? value.sourceEvidence),
+    consentedAt: optionalText(existing.consentedAt ?? value.privacyConsentedAt) || new Date().toISOString(),
+    noticeVersion: optionalText(existing.noticeVersion ?? value.privacyNoticeVersion) || 'admin-evidence-v1',
+  };
+}
+
+function canonicalProspect(value: Record<string, unknown>): Record<string, unknown> {
+  const contact = optionalText(value.contact ?? value.contactValue ?? value.email ?? value.phone);
+  const explicitEmail = optionalText(value.email);
+  const explicitPhone = optionalText(value.phone);
+  const email = explicitEmail || (contact && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact) ? contact : undefined);
+  const phone = explicitPhone || (contact && /^\+?\d[\d\s().-]{6,}$/.test(contact) ? contact : undefined);
+  const sourceChannel = optionalText(value.channel ?? value.contactChannel);
+  const hasSeparatePrivacy = Boolean(value.privacyEvidence || value.privacyEvidenceReference);
+  return {
+    displayName: value.displayName ?? value.name,
+    contact,
+    email,
+    phone,
+    channel: prospectChannel(sourceChannel),
+    source: optionalText(value.source ?? value.acquisitionSource) || sourceChannel || optionalText(value.sourceReference),
+    sourceReference: value.sourceReference ?? (hasSeparatePrivacy ? value.sourceEvidence : undefined),
+    privacyEvidence: privacyEvidence(value),
+    acquisitionOwnerId: value.acquisitionOwnerId ?? value.ownerReferrerId ?? value.owner ?? value.referrerId,
+    linkedMemberId: value.linkedMemberId ?? value.linkMemberId ?? value.memberId,
+    investmentPreferences: value.investmentPreferences,
+    status: value.status,
+  };
+}
+
 function csrfError(request: Request, session: Session | null, pathname: string): Response | null {
   if (!session || !UNSAFE_METHODS.has(request.method) || pathname === '/api/line/webhook') return null;
   if (pathname === '/api/auth/admin') return null;
@@ -180,7 +247,24 @@ async function requestPayload(request: Request, match: RouteMatch, session: Sess
   const base = { context };
   const params = match.params || {};
   if (match.operation === 'getProject') return { ...base, projectId: params.projectId };
-  if (match.operation === 'createBooking') return { ...base, booking: body };
+  if (match.operation === 'createBooking') {
+    const rawConsent = body.consent;
+    return {
+      ...base,
+      booking: {
+        displayName: body.displayName || body.name,
+        identityType: body.identityType || body.role,
+        advisorType: body.advisorType || body.topic,
+        topic: body.topic,
+        phone: body.phone,
+        email: body.email,
+        preferredDate: body.preferredDate,
+        preferredTime: body.preferredTime,
+        note: body.note || body.notes,
+        consent: rawConsent === true || rawConsent === 'true' || rawConsent === 'on',
+      },
+    };
+  }
   if (match.operation === 'createActivation') return { ...base, activation: body };
   if (match.operation === 'createSubscription') {
     return {
@@ -236,6 +320,60 @@ async function requestPayload(request: Request, match: RouteMatch, session: Sess
     };
   }
   if (match.operation === 'adminProcessNotifications') return { ...base, limit: body.limit };
+  if (match.operation === 'getNewsletterPreferences' || match.operation === 'listMatches' ||
+      match.operation === 'listContentFeed' || match.operation === 'listPublicContent') return base;
+  if (match.operation === 'patchNewsletterPreferences') {
+    const { reason: _ignoredClientReason, ...preferences } = body;
+    return { ...base, preferences, reason: 'Member updated newsletter preferences' };
+  }
+  if (match.operation === 'getDailyDigest') {
+    return { ...base, digestDate: url.searchParams.get('digestDate') || url.searchParams.get('date') || undefined };
+  }
+  if (match.operation === 'adminListProspects' || match.operation === 'adminListMatches' ||
+      match.operation === 'adminListContent' || match.operation === 'adminDigestPreview') {
+    return { ...base, ...Object.fromEntries(url.searchParams) };
+  }
+  if (match.operation === 'adminCreateProspect') {
+    const { reason, ...prospect } = body;
+    return { ...base, prospect: canonicalProspect(prospect), reason };
+  }
+  if (match.operation === 'adminImportProspects') {
+    const rawRows = body.rows || body.leads || body.prospects || body.records;
+    const rows = Array.isArray(rawRows) ? rawRows.map((row) => canonicalProspect(
+      row && typeof row === 'object' && !Array.isArray(row) ? row as Record<string, unknown> : {},
+    )) : rawRows;
+    const hasSeparatePrivacy = Boolean(body.privacyEvidence || body.privacyEvidenceReference);
+    return {
+      ...base,
+      rows,
+      sourceEvidence: hasSeparatePrivacy ? body.sourceEvidence || body.sourceReference : body.sourceReference,
+      privacyEvidence: privacyEvidence(body, hasSeparatePrivacy ? undefined : body.sourceEvidence),
+      reason: body.reason,
+    };
+  }
+  if (match.operation === 'adminPatchProspect') {
+    const { reason, ...patch } = body;
+    return { ...base, ...params, patch, reason };
+  }
+  if (match.operation === 'adminCreateContent') {
+    const { reason, ...content } = body;
+    return { ...base, content, reason };
+  }
+  if (match.operation === 'adminPatchContent') {
+    const { reason, ...patch } = body;
+    return { ...base, ...params, patch, reason };
+  }
+  if (match.operation === 'adminDigestGenerate') {
+    return {
+      ...base,
+      digestDate: body.digestDate || body.date,
+      reason: body.reason,
+      send: body.send !== false,
+    };
+  }
+  if (match.operation === 'adminExportProspects') {
+    return { ...base, reason: url.searchParams.get('reason') || undefined };
+  }
   return base;
 }
 
@@ -257,7 +395,7 @@ async function proxy(request: Request, env: GatewayEnv, match: RouteMatch, sessi
       : jsonError(400, 'invalid_json', 'Request body must be valid JSON');
   }
   const result = await callAppsScript(env, match.operation, payload);
-  if (result.ok && match.operation === 'adminExport') {
+  if (result.ok && (match.operation === 'adminExport' || match.operation === 'adminExportProspects')) {
     const data = result.data;
     if (!isCsvExport(data)) {
       return jsonError(502, 'apps_script_invalid_response', 'Operations backend returned an invalid CSV export');
@@ -271,7 +409,7 @@ async function proxy(request: Request, env: GatewayEnv, match: RouteMatch, sessi
       },
     });
   }
-  const serializedResult = match.access === 'member' ? stripMemberPrivateFields(result) : result;
+  const serializedResult = match.access === 'member' && session?.role !== 'admin' ? stripMemberPrivateFields(result) : result;
   return new Response(JSON.stringify(serializedResult), {
     status: result.ok ? 200 : appsScriptErrorStatus(result.error.code),
     headers: JSON_HEADERS,
@@ -284,9 +422,11 @@ function stripMemberPrivateFields(value: unknown): unknown {
   const result: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     const normalized = key.toLowerCase();
-    if (normalized.startsWith('commission') || normalized.startsWith('referralsnapshot') ||
-        normalized.startsWith('referralattribution') ||
-        ['evidencereference', 'referrername'].includes(normalized)) continue;
+    if (normalized.startsWith('commission') || normalized.startsWith('referral') || normalized.startsWith('referrer') ||
+        normalized.startsWith('acquisition') || normalized === 'owner' || normalized === 'ownerid' ||
+        normalized.includes('evidence') ||
+        ['privacyconsentedat', 'privacynoticeversion', 'importedby', 'importedat', 'evidencereference',
+          'sourceevidence', 'legalname', 'phone', 'email', 'contact', 'sourcegroup', 'lineuserid'].includes(normalized)) continue;
     result[key] = stripMemberPrivateFields(child);
   }
   return result;
@@ -561,10 +701,27 @@ export default {
       return withHeaders(jsonError(500, 'internal_error', 'Unexpected gateway error'), request, env);
     }
   },
-  async scheduled(_controller: ScheduledController, env: GatewayEnv, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: GatewayEnv, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil((async () => {
       await drainWebhookEvents(env);
       await cleanupExpired(env);
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).formatToParts(new Date(controller.scheduledTime));
+      const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+      const digestDate = `${values.year}-${values.month}-${values.day}`;
+      const result = await callAppsScript(env, 'adminDigestGenerate', {
+        digestDate,
+        reason: 'Cloudflare scheduled daily digest generation',
+        context: {
+          role: 'service', actorId: 'cloudflare-cron', memberId: '', requestId: crypto.randomUUID(),
+        },
+      });
+      if (!result.ok) {
+        console.error(JSON.stringify({
+          level: 'error', event: 'daily_digest_generation_failed', code: result.error.code, digestDate,
+        }));
+      }
     })().catch((error) => {
       console.error(JSON.stringify({
         level: 'error',

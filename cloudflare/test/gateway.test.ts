@@ -97,6 +97,8 @@ describe('Cloudflare gateway integration', () => {
       'commission_reason_required', 'commission_actor_required', 'commission_approval_required',
       'commission_payment_required', 'commission_void_reason_required', 'referrer_not_found',
       'referrer_not_effective', 'duplicate_referrer_code', 'commission_amount_locked',
+      'delivery_consent_required', 'lead_owner_attribution_conflict', 'prospect_evidence_immutable',
+      'prospect_member_link_required', 'prospect_owner_conflict',
     ];
     for (const code of codes) expect(appsScriptErrorStatus(code)).toBeGreaterThanOrEqual(400);
     for (const code of codes) expect(appsScriptErrorStatus(code)).toBeLessThan(500);
@@ -129,6 +131,64 @@ describe('Cloudflare gateway integration', () => {
     expect(response.status).toBe(403);
     expect(response.headers.get('access-control-allow-origin')).toBeNull();
     await expect(response.json()).resolves.toMatchObject({ error: { code: 'origin_not_allowed' } });
+  });
+
+  it('adapts the exact public booking form DTO before forwarding it to Apps Script', async () => {
+    const calls: Array<{ operation: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.toString() !== env.APPS_SCRIPT_URL) throw new Error(`Unexpected outbound request: ${url}`);
+      const envelope = JSON.parse(String(init?.body)) as { operation: string; payloadJson: string };
+      calls.push({ operation: envelope.operation, payload: JSON.parse(envelope.payloadJson) });
+      return Response.json({ ok: true, data: { booking: { id: 'booking-1' } } });
+    });
+
+    const response = await invoke('/api/bookings', {
+      method: 'POST',
+      headers: { origin: allowedOrigin, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        role: 'company', name: '王小姐', topic: '企業募資顧問', phone: '0912345678',
+        preferredDate: '2026-09-01', preferredTime: '下午', note: '請先電話', consent: 'on',
+      }),
+    });
+
+    expect(response.response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      operation: 'createBooking',
+      payload: {
+        context: { role: 'visitor', actorId: 'anonymous', memberId: '' },
+        booking: {
+          displayName: '王小姐', identityType: 'company', advisorType: '企業募資顧問', topic: '企業募資顧問',
+          phone: '0912345678', preferredDate: '2026-09-01', preferredTime: '下午', note: '請先電話', consent: true,
+        },
+      },
+    });
+  });
+
+  it('maps member booking reads to the member-scoped Apps operation', async () => {
+    const memberSession = 'member-bookings-session';
+    const adminSession = 'admin-bookings-session';
+    await insertSession(memberSession, 'line-bookings');
+    await insertAdminSession(adminSession);
+    const calls: Array<{ operation: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const envelope = JSON.parse(String(init?.body)) as { operation: string; payloadJson: string };
+      calls.push({ operation: envelope.operation, payload: JSON.parse(envelope.payloadJson) });
+      return Response.json({ ok: true, data: { bookings: [{ id: 'booking-1', phone: '0912345678', email: 'member@example.com' }] } });
+    });
+    const result = await invoke('/api/bookings', { headers: { cookie: `${SESSION_COOKIE}=${memberSession}` } });
+    expect(result.response.status).toBe(200);
+    expect(await result.response.text()).not.toMatch(/0912345678|member@example/);
+    const admin = await invoke('/api/bookings', { headers: { cookie: `${SESSION_COOKIE}=${adminSession}` } });
+    expect(admin.response.status).toBe(200);
+    expect(await admin.response.text()).toMatch(/0912345678|member@example/);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      operation: 'listBookings',
+      payload: { context: { role: 'member', memberId: 'member-line-bookings' } },
+    });
+    expect(calls[1]).toMatchObject({ operation: 'listBookings', payload: { context: { role: 'admin' } } });
   });
 
   it('verifies the raw LINE webhook signature and deduplicates accepted events', async () => {
@@ -225,7 +285,7 @@ describe('Cloudflare gateway integration', () => {
       body,
     });
     await waitOnExecutionContext(duplicate.ctx);
-    expect(calls()).toBe(2);
+    expect(calls()).toBe(3); // webhook first/retry plus one idempotent daily-digest maintenance call
   });
 
   it('stops webhook retries after three attempts and cleans old terminal rows', async () => {
@@ -256,7 +316,7 @@ describe('Cloudflare gateway integration', () => {
          FROM webhook_events WHERE webhook_event_id = 'event-exhausted'`,
     ).first<{ attempts: number; status: string; next_attempt_at: number | null }>();
     expect(exhausted).toMatchObject({ attempts: 3, status: 'failed', next_attempt_at: null });
-    expect(calls()).toBe(3);
+    expect(calls()).toBe(6); // three webhook attempts plus one digest maintenance call per cron run
 
     await env.DB.prepare(
       `UPDATE webhook_events SET received_at = ?1 WHERE webhook_event_id = 'event-exhausted'`,
@@ -531,5 +591,145 @@ describe('Cloudflare gateway integration', () => {
     const adminText = await admin.response.text();
     expect(adminText).toContain('commissionState');
     expect(adminText).toContain('evidenceReference');
+  });
+
+  it('proxies the stable growth routes with canonical payloads and CSV attachment', async () => {
+    const memberSession = 'member-growth-session';
+    const adminSession = 'admin-growth-session';
+    await insertSession(memberSession, 'line-growth');
+    await insertAdminSession(adminSession);
+    const calls: Array<{ operation: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.toString() !== env.APPS_SCRIPT_URL) throw new Error(`Unexpected outbound request: ${url}`);
+      const envelope = JSON.parse(String(init?.body)) as { operation: string; payloadJson: string };
+      calls.push({ operation: envelope.operation, payload: JSON.parse(envelope.payloadJson) });
+      if (envelope.operation === 'adminExportProspects') {
+        return Response.json({ ok: true, data: { filename: 'leads.csv', csv: 'id,owner\np-1,r-1' } });
+      }
+      return Response.json({ ok: true, data: { records: [], matches: [], content: [], preferences: {}, digest: null } });
+    });
+    const memberHeaders = { cookie: `${SESSION_COOKIE}=${memberSession}` };
+    const memberMutation = { ...memberHeaders, origin: allowedOrigin, 'x-csrf-token': 'csrf-line-growth', 'content-type': 'application/json' };
+    const adminHeaders = { cookie: `${SESSION_COOKIE}=${adminSession}` };
+    const adminMutation = { ...adminHeaders, origin: allowedOrigin, 'x-csrf-token': 'csrf-admin', 'content-type': 'application/json' };
+
+    for (const path of ['/api/newsletter/preferences', '/api/digest/today', '/api/matches', '/api/content/feed']) {
+      expect((await invoke(path, { headers: memberHeaders })).response.status).toBe(200);
+    }
+    expect((await invoke('/api/content/public')).response.status).toBe(200);
+    expect((await invoke('/api/newsletter/preferences', {
+      method: 'PATCH', headers: memberMutation,
+      body: JSON.stringify({
+        dailyDigestConsent: true, marketingConsent: false, lineDeliveryConsent: true,
+        emailDeliveryConsent: false, deliveryChannels: ['in_app', 'line'],
+      }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/leads?status=new', { headers: adminHeaders })).response.status).toBe(200);
+    expect((await invoke('/api/admin/leads', {
+      method: 'POST', headers: adminMutation,
+      body: JSON.stringify({
+        displayName: 'Lead', contact: 'lead@example.com', channel: 'LINE 社群', status: 'new',
+        ownerReferrerId: 'GROUP-A', sourceReference: 'OPENCHAT-001', sourceEvidence: 'CONSENT-001',
+        reason: 'consented import',
+      }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/leads/import', {
+      method: 'POST', headers: adminMutation,
+      body: JSON.stringify({
+        rows: [{ displayName: 'Lead 2', contact: '0912-345-678', channel: 'OpenChat', sourceReference: 'OPENCHAT-002', ownerReferrerId: 'GROUP-A' }],
+        sourceEvidence: 'CONSENT-BATCH-002', reason: 'batch',
+      }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/leads/prospect-1', {
+      method: 'PATCH', headers: adminMutation,
+      body: JSON.stringify({ status: 'qualified', linkMemberId: 'member-1', reason: 'identity matched' }),
+    })).response.status).toBe(200);
+    for (const path of ['/api/admin/matches?leadId=prospect-1', '/api/admin/content', '/api/admin/newsletters/preview']) {
+      expect((await invoke(path, { headers: adminHeaders })).response.status).toBe(200);
+    }
+    expect((await invoke('/api/admin/content', {
+      method: 'POST', headers: adminMutation,
+      body: JSON.stringify({ type: 'video', title: 'Update', url: 'https://example.com/v', riskNotice: '非投資建議', status: 'published', publicSafe: true, reason: 'public editorial approval' }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/content/content-1', {
+      method: 'PATCH', headers: adminMutation,
+      body: JSON.stringify({ status: 'published', visibility: 'member', reason: 'reviewed' }),
+    })).response.status).toBe(200);
+    expect((await invoke('/api/admin/newsletters/generate', {
+      method: 'POST', headers: adminMutation,
+      body: JSON.stringify({ date: '2026-08-19', reason: 'preview only', send: false }),
+    })).response.status).toBe(200);
+    const csv = await invoke('/api/admin/export/leads.csv', { headers: adminHeaders });
+    expect(csv.response.status).toBe(200);
+    expect(csv.response.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+
+    expect(calls.map((call) => call.operation)).toEqual([
+      'getNewsletterPreferences', 'getDailyDigest', 'listMatches', 'listContentFeed', 'listPublicContent', 'patchNewsletterPreferences',
+      'adminListProspects', 'adminCreateProspect', 'adminImportProspects', 'adminPatchProspect',
+      'adminListMatches', 'adminListContent', 'adminDigestPreview', 'adminCreateContent', 'adminPatchContent',
+      'adminDigestGenerate', 'adminExportProspects',
+    ]);
+    expect(calls[5].payload).toMatchObject({
+      preferences: {
+        dailyDigestConsent: true, marketingConsent: false, lineDeliveryConsent: true,
+        emailDeliveryConsent: false, deliveryChannels: ['in_app', 'line'],
+      },
+      reason: 'Member updated newsletter preferences',
+    });
+    expect(calls[7].payload).toMatchObject({
+      prospect: {
+        acquisitionOwnerId: 'GROUP-A', channel: 'community', source: 'LINE 社群', sourceReference: 'OPENCHAT-001',
+        email: 'lead@example.com', privacyEvidence: { reference: 'CONSENT-001', noticeVersion: 'admin-evidence-v1' },
+      },
+      reason: 'consented import',
+    });
+    expect(calls[7].payload.prospect).not.toHaveProperty('ownerReferrerId');
+    expect(calls[7].payload.prospect).not.toHaveProperty('sourceEvidence');
+    expect(calls[8].payload).toMatchObject({
+      rows: [{
+        acquisitionOwnerId: 'GROUP-A', channel: 'openchat', source: 'OpenChat', sourceReference: 'OPENCHAT-002',
+        phone: '0912-345-678',
+      }],
+      privacyEvidence: { reference: 'CONSENT-BATCH-002', noticeVersion: 'admin-evidence-v1' },
+      reason: 'batch',
+    });
+    expect(calls[9].payload).toMatchObject({ prospectId: 'prospect-1', patch: { status: 'qualified', linkMemberId: 'member-1' }, reason: 'identity matched' });
+    expect(calls[10].payload).toMatchObject({ leadId: 'prospect-1' });
+    expect(calls[13].payload).toMatchObject({ content: { type: 'video', status: 'published', publicSafe: true } });
+    expect(calls[13].payload.content).not.toHaveProperty('visibility');
+    expect(calls[15].payload).toMatchObject({ digestDate: '2026-08-19', reason: 'preview only', send: false });
+  });
+
+  it('member growth responses remove owner/referrer/commission and PII at the gateway', async () => {
+    const memberSession = 'member-growth-private';
+    await insertSession(memberSession, 'line-growth-private');
+    stubAppsScriptSequence([{ ok: true, data: {
+      digest: {
+        memberId: 'member-line-growth-private', legalName: 'PRIVATE NAME', email: 'private@example.com', phone: '0900',
+        acquisitionOwnerId: 'ref-1', referrerName: 'OWNER', commissionState: 'paid',
+        privacyEvidenceReference: 'PRIVACY-SECRET', privacyConsentedAt: '2026-08-18T00:00:00.000Z',
+        importedBy: 'admin@example.com', importedAt: '2026-08-18T00:00:00.000Z',
+        progress: [{ subscriptionId: 's-1', requestedAmountTwd: 100, fundingState: 'paid' }],
+      },
+    } }]);
+    const response = await invoke('/api/digest/today', { headers: { cookie: `${SESSION_COOKIE}=${memberSession}` } });
+    const text = await response.response.text();
+    expect(text).toContain('requestedAmountTwd');
+    expect(text).not.toMatch(/PRIVATE NAME|private@example|0900|acquisitionOwner|referrerName|commissionState|PRIVACY-SECRET|privacyConsented|importedBy|admin@example/i);
+  });
+
+  it('scheduled maintenance requests an idempotent Taipei daily digest generation', async () => {
+    const calls: Array<{ operation: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const envelope = JSON.parse(String(init?.body)) as { operation: string; payloadJson: string };
+      calls.push({ operation: envelope.operation, payload: JSON.parse(envelope.payloadJson) });
+      return Response.json({ ok: true, data: { summary: { created: 0, existing: 1 } } });
+    });
+    await runScheduledMaintenance();
+    const digestCall = calls.find((call) => call.operation === 'adminDigestGenerate');
+    expect(digestCall).toBeTruthy();
+    expect(digestCall?.payload).toMatchObject({ context: { role: 'service', actorId: 'cloudflare-cron' } });
+    expect(digestCall?.payload.digestDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });

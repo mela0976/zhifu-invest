@@ -101,6 +101,21 @@ function migrateReferralCommissionSchema() {
   });
 }
 
+/** One-time append-only migration for prospect/content/digest sheets. */
+function migrateGrowthSchema() {
+  var actor = assertAdminIdentity_();
+  return withStoreLock_(function () {
+    var workbook = getWorkbook_();
+    migrateGrowthSchema_(workbook);
+    return {
+      ok: true,
+      migratedBy: actor.email,
+      spreadsheetId: workbook.getId(),
+      sheets: ['Prospects', 'ContentItems', 'NewsletterPreferences', 'DailyDigests']
+    };
+  });
+}
+
 /** Explicit deployment preflight. Returns no secret material. */
 function validateDeploymentConfiguration() {
   var configuration = adminConfiguration_();
@@ -128,6 +143,12 @@ function notificationQueueTriggers_() {
   });
 }
 
+function dailyDigestTriggers_() {
+  return ScriptApp.getProjectTriggers().filter(function (trigger) {
+    return trigger.getHandlerFunction() === 'runDailyDigestSchedule';
+  });
+}
+
 /** Run manually before production deployment. Never returns secret values. */
 function productionPreflight() {
   var actor = assertAdminIdentity_();
@@ -148,6 +169,8 @@ function productionPreflight() {
   }
   var configuration = adminConfiguration_();
   var triggers = notificationQueueTriggers_();
+  var digestTriggers = dailyDigestTriggers_();
+  var emailQuota = MailApp.getRemainingDailyQuota();
   if (triggers.length > 1) {
     throw domainError_('Multiple processNotificationQueue triggers exist; keep exactly one', 'configuration_error', 500);
   }
@@ -156,10 +179,45 @@ function productionPreflight() {
     adminEmail: actor.email,
     administratorCount: configuration.emails.length,
     notificationTriggerCount: triggers.length,
+    dailyDigestTriggerCount: digestTriggers.length,
+    dailyDigestTriggerHealthy: digestTriggers.length === 1,
     spreadsheetConfigured: true,
     gatewayConfigured: true,
-    lineMessagingConfigured: true
+    lineMessagingConfigured: true,
+    emailDailyQuotaRemaining: emailQuota,
+    emailDigestAvailable: emailQuota > 0
   };
+}
+
+/** Idempotently reconcile the sole daily digest trigger. */
+function installDailyDigestTrigger() {
+  var status = productionPreflight();
+  var triggers = dailyDigestTriggers_();
+  while (triggers.length > 1) {
+    ScriptApp.deleteTrigger(triggers.pop());
+  }
+  if (triggers.length === 0) {
+    ScriptApp.newTrigger('runDailyDigestSchedule').timeBased()
+      .everyDays(1).atHour(7).inTimezone('Asia/Taipei').create();
+    status.dailyDigestTriggerCount = 1;
+    status.dailyDigestTriggerCreated = true;
+  } else {
+    status.dailyDigestTriggerCount = 1;
+    status.dailyDigestTriggerCreated = false;
+  }
+  return status;
+}
+
+/** Apps Script fallback scheduler; the Taipei date is computed at execution time. */
+function runDailyDigestSchedule() {
+  return withStoreLock_(function () {
+    return generateDailyDigests_(
+      taipeiDigestDate_(new Date()),
+      { type: 'system', id: 'apps-script-daily-trigger' },
+      'apps-script-daily:' + taipeiDigestDate_(new Date()),
+      'Apps Script scheduled daily digest generation'
+    );
+  });
 }
 
 /** Idempotently install the sole five-minute notification worker trigger. */
@@ -389,6 +447,7 @@ function dispatchOperation_(operation, payload) {
     getMember: operationGetMember_,
     listProjects: operationListProjects_,
     getProject: operationGetProject_,
+    listBookings: operationListBookings_,
     listSubscriptions: operationListSubscriptions_,
     createBooking: operationCreateBooking_,
     createActivation: operationCreateActivation_,
@@ -408,7 +467,24 @@ function dispatchOperation_(operation, payload) {
     adminApproveNotification: operationAdminApproveNotification_,
     adminCreateBulkNotification: operationAdminCreateBulkNotification_,
     adminProcessNotifications: operationAdminProcessNotifications_,
-    adminExport: operationAdminExport_
+    adminExport: operationAdminExport_,
+    adminListProspects: operationAdminListProspects_,
+    adminCreateProspect: operationAdminCreateProspect_,
+    adminImportProspects: operationAdminImportProspects_,
+    adminPatchProspect: operationAdminPatchProspect_,
+    adminListMatches: operationAdminListMatches_,
+    adminListContent: operationAdminListContent_,
+    adminCreateContent: operationAdminCreateContent_,
+    adminPatchContent: operationAdminPatchContent_,
+    adminDigestPreview: operationAdminDigestPreview_,
+    adminDigestGenerate: operationAdminDigestGenerate_,
+    adminExportProspects: operationAdminExportProspects_,
+    getNewsletterPreferences: operationGetNewsletterPreferences_,
+    patchNewsletterPreferences: operationPatchNewsletterPreferences_,
+    getDailyDigest: operationGetDailyDigest_,
+    listMatches: operationListMatches_,
+    listContentFeed: operationListContentFeed_,
+    listPublicContent: operationListPublicContent_
   };
   var aliases = {
     'projects.list': function (value) { return operationListProjects_(value, normalizeContext_(value)); },
@@ -455,6 +531,23 @@ function dispatchOperation_(operation, payload) {
     'admin.exports.members': function (value) { value.resource = 'members'; return operationAdminExport_(value, normalizeContext_(value)); },
     'admin.exports.subscriptions': function (value) { value.resource = 'subscriptions'; return operationAdminExport_(value, normalizeContext_(value)); }
   };
+  aliases['admin.leads.list'] = function (value) { return operationAdminListProspects_(value, normalizeContext_(value)); };
+  aliases['admin.leads.create'] = function (value) { return operationAdminCreateProspect_(value, normalizeContext_(value)); };
+  aliases['admin.leads.import'] = function (value) { return operationAdminImportProspects_(value, normalizeContext_(value)); };
+  aliases['admin.leads.update'] = function (value) { return operationAdminPatchProspect_(value, normalizeContext_(value)); };
+  aliases['admin.matches.list'] = function (value) { return operationAdminListMatches_(value, normalizeContext_(value)); };
+  aliases['admin.content.list'] = function (value) { return operationAdminListContent_(value, normalizeContext_(value)); };
+  aliases['admin.content.create'] = function (value) { return operationAdminCreateContent_(value, normalizeContext_(value)); };
+  aliases['admin.content.update'] = function (value) { return operationAdminPatchContent_(value, normalizeContext_(value)); };
+  aliases['admin.newsletters.preview'] = function (value) { return operationAdminDigestPreview_(value, normalizeContext_(value)); };
+  aliases['admin.newsletters.generate'] = function (value) { return operationAdminDigestGenerate_(value, normalizeContext_(value)); };
+  aliases['admin.exports.leads'] = function (value) { return operationAdminExportProspects_(value, normalizeContext_(value)); };
+  aliases['newsletter.preferences.get'] = function (value) { return operationGetNewsletterPreferences_(value, normalizeContext_(value)); };
+  aliases['newsletter.preferences.update'] = function (value) { return operationPatchNewsletterPreferences_(value, normalizeContext_(value)); };
+  aliases['digest.today'] = function (value) { return operationGetDailyDigest_(value, normalizeContext_(value)); };
+  aliases['matches.list'] = function (value) { return operationListMatches_(value, normalizeContext_(value)); };
+  aliases['content.feed'] = function (value) { return operationListContentFeed_(value, normalizeContext_(value)); };
+  aliases['content.public'] = function (value) { return operationListPublicContent_(value, normalizeContext_(value)); };
   if (aliases[operation]) return aliases[operation](payload || {});
   if (!handlers[operation]) throw domainError_('Unknown operation: ' + operation, 'unknown_operation', 404);
   return handlers[operation](payload || {}, normalizeContext_(payload || {}));
@@ -652,17 +745,30 @@ function operationCreateBooking_(payload, context) {
   var member = context.role === 'member' || context.role === 'qualified' ?
     memberForContext_(context) : (context.memberId ? storeFindById_('Members', context.memberId) : null);
   var now = nowIso_();
+  var identityType = String(input.identityType || input.role || 'investor').trim().toLowerCase();
+  if (['investor', 'company', 'other'].indexOf(identityType) === -1) {
+    throw domainError_('Booking identity type is invalid', 'invalid_identity_type');
+  }
+  var consent = input.consent === true || input.consent === 'true' || input.consent === 'on';
+  if (!consent) throw domainError_('Booking privacy consent is required', 'consent_required', 409);
+  var preferredDate = assertRequiredString_(input.preferredDate, 'booking.preferredDate', 20);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(preferredDate) || !Number.isFinite(Date.parse(preferredDate + 'T00:00:00.000Z'))) {
+    throw domainError_('booking.preferredDate must use YYYY-MM-DD', 'validation_error');
+  }
   var booking = {
     id: createId_('booking'),
     demo: false,
     memberId: member ? member.id : '',
-    displayName: assertRequiredString_(input.displayName || (member && member.displayName), 'booking.displayName', 100),
-    phone: normalizeOptionalString_(input.phone || (member && member.phone), 30),
+    displayName: assertRequiredString_(input.displayName || input.name || input.contactName || (member && member.displayName), 'booking.displayName', 100),
+    phone: normalizeOptionalString_(input.phone || input.contactPhone || (member && member.phone), 30),
     email: normalizeOptionalString_(input.email || (member && member.email), 200),
-    advisorType: assertRequiredString_(input.advisorType, 'booking.advisorType', 100),
+    advisorType: assertRequiredString_(input.advisorType || input.topic, 'booking.advisorType', 100),
     topic: assertRequiredString_(input.topic, 'booking.topic', 500),
+    preferredDate: preferredDate,
     preferredTime: assertRequiredString_(input.preferredTime, 'booking.preferredTime', 100),
-    note: normalizeOptionalString_(input.note, 2000),
+    note: normalizeOptionalString_(input.note || input.notes, 2000),
+    identityType: identityType,
+    consentAt: now,
     state: 'requested',
     createdAt: now,
     updatedAt: now
@@ -674,10 +780,13 @@ function operationCreateBooking_(payload, context) {
   appendAudit_({
     entityType: 'booking', entityId: booking.id, action: 'booking.created',
     actor: actorFromContext_(context), before: null, after: booking,
+    reason: member ? 'Member requested advisory booking' : 'Visitor requested advisory booking',
     requestId: context.requestId
   });
   if (member) enqueueMemberNotification_(member.id, 'booking_received', 'booking', booking.id, actorFromContext_(context), context.requestId);
-  return { booking: booking };
+  return { booking: Object.assign({}, booking, {
+    contactName: booking.displayName, contactPhone: booking.phone, notes: booking.note, status: booking.state
+  }) };
 }
 
 function operationCreateActivation_(payload, context) {
@@ -788,6 +897,7 @@ function operationCreateSubscription_(payload, context) {
   }
   var createdAt = nowIso_();
   var referralSnapshot = referralSnapshotForMember_(member, storeList_('Referrers'), createdAt);
+  var acquisitionAttributionSnapshot = acquisitionSnapshotForMember_(member, storeList_('Prospects'), createdAt);
   var subscription = createSubscriptionRecord_({
     id: createId_('subscription'),
     demo: false,
@@ -797,7 +907,8 @@ function operationCreateSubscription_(payload, context) {
     riskAcknowledged: true,
     riskAcknowledgedAt: createdAt,
     riskDisclosureVersion: 'draft-0.1-2026-08-18',
-    referralSnapshot: referralSnapshot
+    referralSnapshot: referralSnapshot,
+    acquisitionAttributionSnapshot: acquisitionAttributionSnapshot
   }, createdAt);
   storeAppend_('Subscriptions', subscription);
   appendAudit_({
@@ -885,6 +996,11 @@ function operationAdminDashboard_(payload, context) {
   var enrichedSubscriptions = enrichSubscriptionsForAdmin_(subscriptions, members, projects);
   var notifications = storeList_('Notifications');
   var referrers = storeList_('Referrers');
+  var prospects = storeList_('Prospects');
+  var contentItems = storeList_('ContentItems');
+  var newsletterPreferences = storeList_('NewsletterPreferences');
+  var dailyDigests = storeList_('DailyDigests');
+  var todayKey = taipeiDigestDate_(new Date());
   var referrerMap = {};
   referrers.forEach(function (referrer) { referrerMap[referrer.id] = referrer; });
   var sum = function (field) {
@@ -899,9 +1015,25 @@ function operationAdminDashboard_(payload, context) {
       return record.state === 'pending_manual' || record.state === 'failed';
     }).length,
     referrerCount: referrers.length,
-    attributedMemberCount: members.filter(function (record) {
-      return record.referralAttribution && record.referralAttribution.state === 'verified';
+    attributedMemberCount: Object.keys(prospects.reduce(function (result, record) {
+      if (record.linkedMemberId) result[record.linkedMemberId] = true;
+      return result;
+    }, {})).length,
+    acquisitionAttributedSubscriptionCount: subscriptions.filter(function (record) {
+      return Boolean(record.acquisitionAttributionSnapshot);
     }).length,
+    acquisitionAttributedRequestedAmountTwd: subscriptions.filter(function (record) {
+      return Boolean(record.acquisitionAttributionSnapshot);
+    }).reduce(function (total, record) { return total + Number(record.requestedAmountTwd || 0); }, 0),
+    acquisitionAttributedAllocatedAmountTwd: subscriptions.filter(function (record) {
+      return Boolean(record.acquisitionAttributionSnapshot);
+    }).reduce(function (total, record) { return total + Number(record.allocatedAmountTwd || 0); }, 0),
+    prospectCount: prospects.length,
+    newProspectCount: prospects.filter(function (record) { return record.status === 'new'; }).length,
+    linkedProspectCount: prospects.filter(function (record) { return Boolean(record.linkedMemberId); }).length,
+    publishedContentCount: contentItems.filter(function (record) { return record.status === 'published'; }).length,
+    dailyDigestConsentCount: newsletterPreferences.filter(function (record) { return record.dailyDigestConsent === true; }).length,
+    todayDigestCount: dailyDigests.filter(function (record) { return record.digestDate === todayKey; }).length,
     commissionAccruedAmountTwd: subscriptions.filter(function (record) {
       return record.commissionState === 'accrued';
     }).reduce(function (total, record) { return total + Number(record.commissionAccruedAmountTwd || 0); }, 0),
@@ -959,6 +1091,17 @@ function operationAdminDashboard_(payload, context) {
       refundedAmountTwd: overview.refundedAmountTwd,
       referrerCount: overview.referrerCount,
       attributedMemberCount: overview.attributedMemberCount,
+      acquisitionAttributedSubscriptionCount: overview.acquisitionAttributedSubscriptionCount,
+      acquisitionAttributedRequestedAmountTwd: overview.acquisitionAttributedRequestedAmountTwd,
+      acquisitionAttributedAllocatedAmountTwd: overview.acquisitionAttributedAllocatedAmountTwd,
+      attributableRequestedAmountTwd: overview.acquisitionAttributedRequestedAmountTwd,
+      attributableAllocatedAmountTwd: overview.acquisitionAttributedAllocatedAmountTwd,
+      prospectCount: overview.prospectCount,
+      newProspectCount: overview.newProspectCount,
+      linkedProspectCount: overview.linkedProspectCount,
+      publishedContentCount: overview.publishedContentCount,
+      dailyDigestConsentCount: overview.dailyDigestConsentCount,
+      todayDigestCount: overview.todayDigestCount,
       commissionAccruedAmountTwd: overview.commissionAccruedAmountTwd,
       commissionApprovedAmountTwd: overview.commissionApprovedAmountTwd,
       commissionPaidAmountTwd: overview.commissionPaidAmountTwd,
@@ -968,6 +1111,8 @@ function operationAdminDashboard_(payload, context) {
     members: enrichedMembers,
     subscriptions: enrichedSubscriptions,
     commissions: commissions,
+    prospects: prospects,
+    content: contentItems,
     actions: actions,
     recentSubscriptions: enrichedSubscriptions.slice().sort(function (a, b) {
       return String(b.updatedAt).localeCompare(String(a.updatedAt));
@@ -982,6 +1127,9 @@ function operationAdminDashboard_(payload, context) {
       }).slice(0, 20),
       commissions: enrichedSubscriptions.filter(function (record) {
         return record.commissionState === 'accrued' || record.commissionState === 'approved';
+      }).slice(0, 20),
+      prospects: prospects.filter(function (record) {
+        return record.status === 'new' || record.status === 'qualified';
       }).slice(0, 20)
     }
   };
@@ -1048,8 +1196,15 @@ function operationAdminPatchMember_(payload, context) {
     });
     next.projectAccess = patch.projectAccess.slice();
   }
+  if (patch.investmentPreferences !== undefined) {
+    next.investmentPreferences = normalizeInvestmentPreferences_(patch.investmentPreferences);
+  }
   if (patch.referralAttribution !== undefined) {
     assertRequiredString_(payload.reason, 'reason', 1000);
+    if (current.leadOwnerAttribution && (!patch.referralAttribution ||
+        patch.referralAttribution.referrerId !== current.leadOwnerAttribution.referrerId)) {
+      throw domainError_('Referral attribution cannot conflict with immutable lead ownership', 'lead_owner_attribution_conflict', 409);
+    }
     next.referralAttribution = verifyReferralAttribution_(
       current.referralAttribution,
       patch.referralAttribution,
@@ -1085,7 +1240,8 @@ function operationAdminPatchProject_(payload, context) {
     'publicVisibility', 'displayName', 'industry', 'stage', 'region', 'summary', 'highlights',
     'videoUrl', 'companyName', 'taxId', 'round', 'targetAmountTwd', 'minimumAmountTwd',
     'incrementAmountTwd', 'deadline', 'valuationNote', 'useOfFunds', 'teamSummary',
-    'financialSummary', 'risks', 'reports', 'deck', 'memberAllowlist'
+    'financialSummary', 'risks', 'reports', 'deck', 'memberAllowlist', 'status',
+    'publishedAt', 'withdrawnAt'
   ];
   Object.keys(patch).forEach(function (field) {
     if (allowed.indexOf(field) === -1) throw domainError_('Project field cannot be patched: ' + field, 'validation_error');

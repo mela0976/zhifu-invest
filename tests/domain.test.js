@@ -2,17 +2,25 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   DomainError,
+  assertLeadStatusTransition,
   assertTransition,
   calculateCommissionAmount,
+  canViewContentItem,
+  captureAcquisitionAttributionSnapshot,
   captureReferralSnapshot,
   canAccessProtectedProject,
   createSubscriptionRecord,
   deriveAllocationState,
   deriveFundingState,
   publicProject,
+  projectMatches,
+  taipeiDate,
   updateCommissionRecord,
   updateSubscriptionRecord,
   validateReferrer,
+  validateContentItem,
+  validateLead,
+  validateNewsletterPreference,
   validateAmounts,
 } from '../src/domain.js';
 import { createSeedData } from '../src/seeds.js';
@@ -51,6 +59,129 @@ test('verified attribution snapshots current referrer terms and exact commission
   assert.equal(snapshot.capturedAt, now);
   assert.equal(calculateCommissionAmount(333_333, 333), 11_099);
   assert.equal(captureReferralSnapshot({ ...member, referralAttribution: { ...member.referralAttribution, state: 'claimed' } }, data.referrers, now), null);
+});
+
+test('lead evidence, contact normalization and acquisition attribution are independent from commission eligibility', () => {
+  const now = '2026-08-18T12:00:00.000Z';
+  const lead = validateLead({
+    owner: 'REFERRER', source: 'SOURCE-001', sourceEvidence: 'PRIVACY-001',
+    contact: 'LEAD@EXAMPLE.COM', industryPreferences: ['生技醫療'],
+    ticketMinTwd: 500_000, ticketMaxTwd: 1_000_000,
+  }, { now });
+  assert.equal(lead.email, 'lead@example.com');
+  assert.equal(lead.phone, '');
+  assert.equal(lead.privacyEvidence.consentedAt, now);
+  assert.equal(validateLead({ ...lead, contact: undefined, phone: '0912-345-678' }, { now }).phone, '0912345678');
+  assert.throws(
+    () => validateLead({ owner: 'REFERRER', source: 'SOURCE-002' }, { now }),
+    (error) => error instanceof DomainError && error.code === 'lead_privacy_evidence_required',
+  );
+  assert.throws(
+    () => assertLeadStatusTransition('qualified', 'contacted'),
+    (error) => error instanceof DomainError && error.code === 'invalid_lead_transition',
+  );
+
+  const member = {
+    leadOwnerAttribution: { leadId: 'lead-1', referrerId: 'referrer-1' },
+    referralAttribution: { state: 'verified', referrerId: 'referrer-1' },
+  };
+  assert.deepEqual(captureAcquisitionAttributionSnapshot(member, now), {
+    leadId: 'lead-1', ownerReferrerId: 'referrer-1', capturedAt: now,
+  });
+  assert.equal(captureReferralSnapshot(member, [{
+    id: 'referrer-1', status: 'disabled', effectiveAt: '2026-01-01T00:00:00.000Z', expiresAt: null,
+  }], now), null);
+});
+
+test('content publication, newsletter channels, project match reasons and Taipei date fail closed', () => {
+  const now = '2026-08-18T12:00:00.000Z';
+  assert.equal(taipeiDate('2026-08-18T16:30:00.000Z'), '2026-08-19');
+  assert.throws(() => validateContentItem({
+    type: 'article', title: 'Unsafe publish', status: 'published', url: 'https://example.invalid/a',
+  }, { now }), (error) => error instanceof DomainError && error.code === 'risk_disclosure_required');
+  assert.throws(() => validateContentItem({
+    type: 'article', title: 'Future publish', status: 'published', url: 'https://example.invalid/future',
+    riskDisclosure: 'Risk', publishedAt: '2027-08-18T12:00:00.000Z',
+  }, { now }), (error) => error instanceof DomainError && error.code === 'invalid_published_at');
+  const content = validateContentItem({
+    type: 'video', title: 'Published video', status: 'published', url: 'https://example.invalid/v',
+    publicSafe: true, riskNotice: 'Investment risk disclosure',
+  }, { now });
+  assert.equal(content.videoUrl, 'https://example.invalid/v');
+  assert.equal(canViewContentItem(content, { publicOnly: true }), true);
+  assert.equal(canViewContentItem({ ...content, status: 'draft' }, { publicOnly: true }), false);
+
+  const defaults = validateNewsletterPreference({});
+  assert.deepEqual(defaults.deliveryChannels, ['in_app']);
+  assert.equal(defaults.dailyDigestConsent, false);
+  assert.equal(defaults.marketingConsent, false);
+  assert.throws(() => validateNewsletterPreference({ deliveryChannels: ['in_app', 'line'] }, defaults), (error) => (
+    error instanceof DomainError && error.code === 'delivery_consent_required'
+  ));
+  const optedIn = validateNewsletterPreference({
+    dailyDigestConsent: true, lineDeliveryConsent: true, deliveryChannels: ['line'],
+  }, defaults);
+  assert.deepEqual(optedIn.deliveryChannels, ['in_app', 'line']);
+  assert.equal(optedIn.marketingConsent, false);
+
+  const data = createSeedData();
+  const member = data.members[0];
+  const first = projectMatches({ subject: member, member, projects: data.projects, now: '2026-08-18T12:00:00.000Z' });
+  const second = projectMatches({ subject: member, member, projects: data.projects, now: '2026-08-18T12:00:00.000Z' });
+  assert.deepEqual(first, second);
+  assert.ok(first.every((match) => match.reasons.length === 4));
+  assert.ok(first.flatMap((match) => match.reasons).every((reason) => reason.code && reason.label));
+});
+
+test('content visibility defaults and public read-time gates use the canonical contract', () => {
+  const now = '2026-08-18T12:00:00.000Z';
+  const publicItem = validateContentItem({
+    type: 'article', title: 'Public research', status: 'published', publicSafe: true,
+    url: 'https://example.invalid/public', riskDisclosure: 'Capital is at risk.',
+  }, { now });
+  const memberItem = validateContentItem({
+    type: 'article', title: 'Member research', status: 'published',
+    url: 'https://example.invalid/member', riskDisclosure: 'Capital is at risk.',
+  }, { now });
+  const qualifiedItem = validateContentItem({
+    type: 'project_update', title: 'Project update', status: 'published', projectId: 'project-01',
+    url: 'https://example.invalid/update', riskDisclosure: 'Capital is at risk.',
+  }, { now });
+
+  assert.equal(publicItem.visibility, 'public');
+  assert.equal(memberItem.visibility, 'member');
+  assert.equal(qualifiedItem.visibility, 'qualified');
+  assert.throws(() => validateContentItem({
+    type: 'article', title: 'Invalid visibility', visibility: 'all', status: 'draft',
+  }, { now }), (error) => error instanceof DomainError && error.code === 'invalid_content_visibility');
+
+  assert.equal(canViewContentItem(publicItem, { publicOnly: true, now }), true);
+  assert.equal(canViewContentItem({ ...publicItem, visibility: 'member' }, { publicOnly: true, now }), false);
+  assert.equal(canViewContentItem({ ...publicItem, publishedAt: '2026-08-18T12:00:01.000Z' }, { publicOnly: true, now }), false);
+});
+
+test('project matching excludes unpublished, withdrawn, closed and expired candidates', () => {
+  const now = '2026-08-18T12:00:00.000Z';
+  const candidates = [
+    { id: 'active', publicVisibility: 'teaser', protected: { deadline: '2026-08-19', minimumAmountTwd: 500_000, targetAmountTwd: 5_000_000 } },
+    { id: 'unpublished', publicVisibility: 'hidden', protected: { deadline: '2026-08-19', minimumAmountTwd: 500_000, targetAmountTwd: 5_000_000 } },
+    { id: 'withdrawn', status: 'withdrawn', publicVisibility: 'teaser', protected: { deadline: '2026-08-19', minimumAmountTwd: 500_000, targetAmountTwd: 5_000_000 } },
+    { id: 'closed', fundraisingState: 'closed', publicVisibility: 'teaser', protected: { deadline: '2026-08-19', minimumAmountTwd: 500_000, targetAmountTwd: 5_000_000 } },
+    { id: 'expired', publicVisibility: 'teaser', protected: { deadline: '2026-08-17', minimumAmountTwd: 500_000, targetAmountTwd: 5_000_000 } },
+  ].map((project) => ({
+    displayName: project.id, industry: '半導體', memberAllowlist: [], ...project,
+  }));
+  const member = {
+    id: 'member-1', membershipState: 'active', qualificationState: 'approved',
+    qualificationApproval: { expiresAt: '2027-01-01T00:00:00.000Z' },
+    investmentPreferences: { industries: ['半導體'], ticketMinTwd: 500_000, ticketMaxTwd: 2_000_000 },
+    projectAccess: candidates.map((project) => project.id),
+  };
+
+  const matches = projectMatches({ subject: member, member, projects: candidates, now });
+  assert.deepEqual(matches.map((item) => item.projectId), ['active']);
+  assert.equal(matches[0].projectName, 'active');
+  assert.ok(matches[0].reasons.every((reason) => reason.code && reason.label));
 });
 
 test('commission stays pending for partial allocation, accrues only at final, then locks the amount', () => {

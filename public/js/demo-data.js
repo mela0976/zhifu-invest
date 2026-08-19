@@ -124,6 +124,7 @@ export const demoProjects = [
 export const demoMember = {
   id: 'M-0086',
   name: '林怡君',
+  email: 'member-demo@example.invalid',
   maskedPhone: '09•• ••• 628',
   source: '引薦人 LINE 社群｜北區投資班',
   membershipStatus: 'active',
@@ -231,6 +232,45 @@ export const demoActions = [
   { id: 'ACT-104', priority: 'normal', title: 'LINE 通知重試', detail: '1 則通知已重試 3 次', type: '通知異常', due: '待處理' },
 ];
 
+export const demoLeads = [
+  { id: 'LEAD-1042', displayName: '王志明', email: 'wang@example.invalid', channel: 'LINE 社群', sourceReference: 'LINE-NORTH-1042', status: 'qualified', privacyEvidence: { reference: 'LINE-OC-20260818-021', consentedAt: '2026-08-18T09:12:00+08:00' }, importedBy: '引薦人 Demo 管理員', createdAt: '2026-08-18T09:12:00+08:00', ownerReferrerId: 'REF-PRIMARY', memberId: 'M-0086', linkedMemberName: '林怡君', updatedAt: '2026-08-18T11:20:00+08:00' },
+  { id: 'LEAD-1043', displayName: '許雅婷', phone: '09•• ••• 772', channel: 'OpenChat', sourceReference: 'OPENCHAT-BIO-1043', status: 'contacted', privacyEvidence: { reference: 'OPENCHAT-BIO-0818-07', consentedAt: '2026-08-18T10:05:00+08:00' }, importedBy: '營運匯入批次 B-0818', createdAt: '2026-08-18T10:05:00+08:00', ownerReferrerId: 'REF-ND', memberId: null, updatedAt: '2026-08-18T14:30:00+08:00' },
+  { id: 'LEAD-1044', displayName: '周建宏', email: 'chou@example.invalid', channel: '顧問活動', sourceReference: 'EVENT-SEM-1044', status: 'new', privacyEvidence: { reference: 'EVENT-SEM-20260817-14', consentedAt: '2026-08-17T18:00:00+08:00' }, importedBy: '引薦人 Demo 管理員', createdAt: '2026-08-17T18:00:00+08:00', ownerReferrerId: 'REF-HJ', memberId: null, updatedAt: '2026-08-17T18:00:00+08:00' },
+  { id: 'LEAD-1045', displayName: '蔡佩珊', phone: '09•• ••• 119', channel: '轉介', sourceReference: 'INTRO-MY-1045', status: 'converted', privacyEvidence: { reference: 'INTRO-MY-20260815-03', consentedAt: '2026-08-15T16:20:00+08:00' }, importedBy: '明曜合作窗口', createdAt: '2026-08-15T16:20:00+08:00', ownerReferrerId: 'REF-MY', memberId: 'M-0090', linkedMemberName: '黃雅雯', updatedAt: '2026-08-16T10:00:00+08:00' },
+];
+
+export const demoContent = [
+  { id: 'CONTENT-201', type: 'video', title: '生技授權評估的三個核對點', url: 'https://example.com/videos/biotech-licensing', projectId: 'BIO-2401', projectName: '精準醫療研發計畫', summary: '從市場、法規與授權節點建立研究問題。', riskNotice: '內容為一般產業研究，不構成投資建議或獲利保證。', visibility: 'public', status: 'published', publicSafe: true, publishedAt: '2026-08-18T08:00:00+08:00' },
+  { id: 'CONTENT-202', type: 'article', title: '如何區分 AI 推論與已核准事實', url: 'https://example.com/articles/ai-review', projectId: '', projectName: '', summary: '閱讀研究報告時，先辨識資料來源、推論與人工審閱責任。', riskNotice: '內容僅供研究方法參考。', visibility: 'public', status: 'published', publicSafe: true, publishedAt: '2026-08-17T09:30:00+08:00' },
+  { id: 'CONTENT-203', type: 'project_update', title: '智慧製造計畫完成新場域驗證', url: 'https://example.com/updates/factory-ai', projectId: 'SYS-2403', projectName: '智慧製造整合計畫', summary: '會員版更新，依逐案授權顯示。', riskNotice: '專案進度仍可能變動，以正式揭露文件為準。', visibility: 'qualified', status: 'published', publicSafe: false, publishedAt: '2026-08-18T13:00:00+08:00' },
+  { id: 'CONTENT-204', type: 'video', title: '半導體量產風險快速導讀', url: 'https://example.com/videos/semiconductor-risk', projectId: 'SEM-2402', projectName: '邊緣運算晶片計畫', summary: '草稿等待內容核准。', riskNotice: '尚未核准發布。', visibility: 'member', status: 'draft', publicSafe: false, publishedAt: null },
+];
+
+export const demoMatches = [
+  { id: 'MATCH-301', projectId: 'BIO-2404', projectName: '健康老化服務計畫', score: 92, reason: '明確產業偏好包含生技醫療，金額級距相符，且資格與逐案權限均有效。', reasons: ['明確產業偏好相符', '金額級距相符', '資格與逐案權限有效'], updatedAt: '2026-08-18T07:30:00+08:00' },
+  { id: 'MATCH-302', projectId: 'SEM-2402', projectName: '邊緣運算晶片計畫', score: 84, reason: '明確產業偏好包含半導體，且資格與此案逐案權限均有效。', reasons: ['明確半導體偏好', '資格與逐案權限有效'], updatedAt: '2026-08-18T07:30:00+08:00' },
+];
+
+export const demoDigest = {
+  date: '2026-08-19',
+  headline: '今日有 1 筆專案更新與 2 則新研究內容',
+  fiveAmountProgress: { requested: 3000000, approved: 2600000, received: 2200000, allocated: 1600000, refunded: 200000 },
+  content: demoContent.filter((item) => item.status === 'published'),
+  matches: demoMatches,
+  generatedAt: '2026-08-19T07:00:00+08:00',
+};
+
+export const demoNewsletterPreferences = {
+  dailyDigestConsent: true,
+  marketingConsent: false,
+  emailDeliveryConsent: false,
+  lineDeliveryConsent: true,
+  deliveryChannels: { in_app: true, line: true, email: false },
+  emailAvailable: true,
+  lineAvailable: true,
+  updatedAt: '2026-08-18T19:00:00+08:00',
+};
+
 export const demoAdmin = {
   kpis: {
     totalMembers: 1286,
@@ -244,6 +284,8 @@ export const demoAdmin = {
   subscriptions: demoAdminSubscriptions,
   referrers: demoReferrers,
   commissions: demoCommissions,
+  leads: demoLeads,
+  content: demoContent,
   actions: demoActions,
 };
 
@@ -255,4 +297,6 @@ export const statusLabels = {
   unpaid: '未入金', partial: '部分完成', paid: '已入金', refunded: '已退款',
   final: '最終分配', draft: '草稿', qualified: '合格投資人', member: '正式會員',
   accrued: '已計提', void: '已作廢', not_applicable: '不適用',
+  new: '新名單', contacted: '已聯繫', converted: '已轉會員', archived: '不再追蹤',
+  published: '已發布', video: '投資影音', article: '研究文章', project_update: '專案更新',
 };

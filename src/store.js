@@ -71,6 +71,47 @@ function migrateDemoReferrerIdentity(data) {
   return true;
 }
 
+function migrateEngagementSchema(data) {
+  if ((data.meta?.schemaVersion || 1) >= 4) return false;
+  data.meta ||= {};
+  data.leads = Array.isArray(data.leads) ? data.leads : [];
+  data.contentItems = Array.isArray(data.contentItems) ? data.contentItems : [];
+  data.newsletterPreferences = Array.isArray(data.newsletterPreferences) ? data.newsletterPreferences : [];
+  data.dailyDigests = Array.isArray(data.dailyDigests) ? data.dailyDigests : [];
+  for (const member of data.members || []) {
+    if (member.leadOwnerAttribution === undefined) member.leadOwnerAttribution = null;
+    if (member.investmentPreferences === undefined) {
+      member.investmentPreferences = { industries: [], ticketMinTwd: 0, ticketMaxTwd: Number.MAX_SAFE_INTEGER };
+    }
+  }
+  data.meta.schemaVersion = 4;
+  return true;
+}
+
+function migrateAcquisitionAttributionSchema(data) {
+  if ((data.meta?.schemaVersion || 1) >= 5) return false;
+  data.meta ||= {};
+  for (const subscription of data.subscriptions || []) {
+    // No historical lead-owner evidence existed at capture time; never infer acquisition attribution.
+    subscription.acquisitionAttributionSnapshot = null;
+  }
+  data.meta.schemaVersion = 5;
+  return true;
+}
+
+function migrateContentVisibilitySchema(data) {
+  if ((data.meta?.schemaVersion || 1) >= 6) return false;
+  data.meta ||= {};
+  for (const item of data.contentItems || []) {
+    if (item.visibility) continue;
+    item.visibility = item.publicSafe === true
+      ? 'public'
+      : item.type === 'project_update' ? 'qualified' : 'member';
+  }
+  data.meta.schemaVersion = 6;
+  return true;
+}
+
 export class JsonStore {
   constructor(filePath = process.env.DATA_FILE || './runtime/data.json') {
     this.filePath = resolve(filePath);
@@ -85,7 +126,11 @@ export class JsonStore {
       this.data = JSON.parse(await readFile(this.filePath, 'utf8'));
       const migratedReferralSchema = migrateReferralSchema(this.data);
       const migratedReferrerIdentity = migrateDemoReferrerIdentity(this.data);
-      if (migratedReferralSchema || migratedReferrerIdentity) await this.persist();
+      const migratedEngagementSchema = migrateEngagementSchema(this.data);
+      const migratedAcquisitionAttributionSchema = migrateAcquisitionAttributionSchema(this.data);
+      const migratedContentVisibilitySchema = migrateContentVisibilitySchema(this.data);
+      if (migratedReferralSchema || migratedReferrerIdentity || migratedEngagementSchema
+          || migratedAcquisitionAttributionSchema || migratedContentVisibilitySchema) await this.persist();
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       this.data = createSeedData();
@@ -146,6 +191,9 @@ export class MemoryStore extends JsonStore {
     this.data = clone(seed);
     migrateReferralSchema(this.data);
     migrateDemoReferrerIdentity(this.data);
+    migrateEngagementSchema(this.data);
+    migrateAcquisitionAttributionSchema(this.data);
+    migrateContentVisibilitySchema(this.data);
   }
 
   async init() { return this; }

@@ -7,6 +7,7 @@ var ZF_NOTIFICATION_POLICY = Object.freeze({
   subscription_operations_confirmed: 'auto',
   subscription_approved: 'auto',
   booking_received: 'auto',
+  daily_digest: 'auto',
   membership_rejected: 'manual',
   qualification_rejected: 'manual',
   subscription_rejected: 'manual',
@@ -21,6 +22,7 @@ var ZF_NOTIFICATION_COPY = Object.freeze({
   subscription_operations_confirmed: '您的認購意向處理狀態已更新，請登入會員中心查看。',
   subscription_approved: '您的認購意向審核狀態已更新，請登入會員中心查看。',
   booking_received: '您的顧問預約已收到，後續狀態請登入會員中心查看。',
+  daily_digest: '您的致富投資每日摘要已更新，請登入會員中心查看。',
   membership_rejected: '您的會員申請狀態已更新，請登入會員中心查看說明。',
   qualification_rejected: '您的合格投資人審核狀態已更新，請登入會員中心查看說明。',
   subscription_rejected: '您的認購意向審核狀態已更新，請登入會員中心查看說明。',
@@ -151,6 +153,20 @@ function linePush_(notification) {
   }
 }
 
+function dailyDigestLineDeliveryAllowed_(notification) {
+  if (notification.eventType !== 'daily_digest') return true;
+  var member = storeList_('Members').filter(function (record) {
+    return record.id === notification.recipientMemberId;
+  })[0] || null;
+  var preference = storeList_('NewsletterPreferences').filter(function (record) {
+    return record.memberId === notification.recipientMemberId;
+  })[0] || null;
+  return Boolean(member && preference && preference.dailyDigestConsent === true &&
+    preference.lineDeliveryConsent === true &&
+    (preference.deliveryChannels || []).indexOf('line') !== -1 &&
+    member.lineUserId && member.lineUserId === notification.lineUserId);
+}
+
 function processNotificationQueue_(limit) {
   var now = nowIso_();
   var records = storeList_('Notifications').filter(function (notification) {
@@ -158,8 +174,23 @@ function processNotificationQueue_(limit) {
       (!notification.nextAttemptAt || notification.nextAttemptAt <= now);
   }).slice(0, Math.max(1, Math.min(Number(limit) || 10, 20)));
 
-  var summary = { attempted: 0, sent: 0, retry: 0, failed: 0 };
+  var summary = { attempted: 0, sent: 0, retry: 0, failed: 0, cancelledConsent: 0 };
   records.forEach(function (current) {
+    if (!dailyDigestLineDeliveryAllowed_(current)) {
+      var cancelled = Object.assign({}, current, {
+        state: 'cancelled_consent', nextAttemptAt: '', lastError: '', updatedAt: nowIso_()
+      });
+      storePut_('Notifications', cancelled);
+      appendAudit_({
+        entityType: 'notification', entityId: cancelled.id, action: 'notification.cancelled_consent',
+        actor: { type: 'system', id: 'notification-worker' },
+        before: { state: current.state, attemptCount: current.attemptCount },
+        after: { state: cancelled.state, attemptCount: cancelled.attemptCount },
+        reason: 'Daily digest delivery consent or identity is no longer valid'
+      });
+      summary.cancelledConsent += 1;
+      return;
+    }
     summary.attempted += 1;
     var next = Object.assign({}, current, {
       attemptCount: Number(current.attemptCount || 0) + 1,

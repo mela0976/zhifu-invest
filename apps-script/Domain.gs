@@ -253,15 +253,16 @@ function verifyReferralAttribution_(currentAttribution, input, referrers, actor,
 }
 
 function referralSnapshotForMember_(member, referrers, capturedAt) {
-  var attribution = member && member.referralAttribution;
-  if (!attribution || attribution.state !== 'verified') {
+  var leadOwner = member && member.leadOwnerAttribution;
+  var attribution = leadOwner ? { referrerId: leadOwner.referrerId, state: 'verified' } : member && member.referralAttribution;
+  if (!attribution || (!leadOwner && attribution.state !== 'verified')) {
     return null;
   }
   var referrer = (referrers || []).filter(function (record) {
     return record.id === attribution.referrerId;
   })[0];
   if (!isReferrerEffective_(referrer, capturedAt)) return null;
-  return {
+  var snapshot = {
     referrerId: referrer.id,
     referrerName: referrer.displayName,
     referralCode: referrer.code,
@@ -270,6 +271,11 @@ function referralSnapshotForMember_(member, referrers, capturedAt) {
     agreementReference: referrer.agreementReference,
     capturedAt: normalizeIsoTime_(capturedAt, 'referralSnapshot.capturedAt', true)
   };
+  if (leadOwner) {
+    snapshot.leadId = leadOwner.leadId;
+    snapshot.attributionSource = 'lead_owner';
+  }
+  return snapshot;
 }
 
 function calculateCommissionAmount_(allocatedAmountTwd, commissionRateBps) {
@@ -492,7 +498,7 @@ function createSubscriptionRecord_(input, now) {
   if (input.riskAcknowledged !== true || !input.riskAcknowledgedAt || !input.riskDisclosureVersion) {
     throw domainError_('Risk acknowledgement, timestamp and disclosure version are required', 'risk_acknowledgement_required', 409);
   }
-  return initializeCommissionFields_({
+  var record = initializeCommissionFields_({
     id: input.id,
     demo: Boolean(input.demo),
     memberId: input.memberId,
@@ -514,6 +520,8 @@ function createSubscriptionRecord_(input, now) {
     createdAt: now,
     updatedAt: now
   }, input.referralSnapshot || null, now);
+  record.acquisitionAttributionSnapshot = input.acquisitionAttributionSnapshot || null;
+  return record;
 }
 
 function validatePartnerApproval_(approval) {
@@ -579,16 +587,13 @@ function sanitizeMemberForSelf_(member) {
     id: member.id,
     demo: Boolean(member.demo),
     displayName: member.displayName,
-    legalName: member.legalName || '',
-    phone: member.phone,
-    email: member.email,
     lineFriendshipState: member.lineFriendshipState,
-    sourceGroup: member.sourceGroup,
     membershipState: member.membershipState,
     qualificationState: member.qualificationState,
     qualificationApproval: member.qualificationApproval || null,
     tier: member.tier,
     projectAccess: member.projectAccess || [],
+    investmentPreferences: member.investmentPreferences || null,
     createdAt: member.createdAt,
     updatedAt: member.updatedAt
   };

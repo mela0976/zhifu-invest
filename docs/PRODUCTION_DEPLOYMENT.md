@@ -82,10 +82,11 @@ Cloudflare 建議新 Worker 使用目前 compatibility date、生成 binding typ
 3. 在同一 project 建立 Gateway 固定版本 deployment：`USER_DEPLOYING`／`ANYONE_ANONYMOUS`。URL 只交給 Worker，所有請求仍須通過 signed envelope。
 4. 由同一 project 的另一個固定版本建立 Admin deployment：`USER_ACCESSING`／`ANYONE`。不要使用 Head deployment；兩個 entry point 共享 ScriptLock、nonce、TOTP replay counter、Sheet 與 audit。
 5. 引薦人與備援管理員先通過 Google `ADMIN_EMAILS`，再輸入自有 TOTP；8 小時後台 session 的原始 token 只在該分頁的 `sessionStorage`，伺服器只存雜湊與期限。Google 帳號本身也必須開啟兩步驟驗證。
-6. 執行 `productionPreflight()`，確認兩名管理員、每人 TOTP、gateway secret 與 spreadsheet 設定均存在；安裝唯一一個 `processNotificationQueue` 5 分鐘 trigger。
+6. 執行 `productionPreflight()`，確認兩名管理員、每人 TOTP、gateway secret、spreadsheet、Email quota 與會員入口設定均存在；安裝唯一一個 `processNotificationQueue` 5 分鐘 trigger，以及唯一一個每日摘要 trigger。摘要日期由程式以 `Asia/Taipei` 計算，trigger 的實際分鐘可能由 Google 略作調整。
 7. GitHub Pages 的 `admin.html` 僅供本機 Demo；正式引薦人儀表板由 Worker 的 `ADMIN_DASHBOARD_URL` 導向 Admin Apps Script `/exec`。
 8. 執行 `migrateReferralCommissionSchema()`，建立 Referrers sheet 及會員／認購的歸因與分潤欄位；舊認購不得推測或回填歷史引薦證據。
-9. production 不執行 `seedDemoData()`；完整 deployment 操作與 manifest 切換方式見 `apps-script/README.md`。
+9. 依 `apps-script/GROWTH-MIGRATION.md` 執行 growth schema migration，建立 Prospects、ContentItems、NewsletterPreferences、DailyDigests，並追加 member preference 與 subscription acquisition snapshot 欄位。migration 只補 schema，不回填虛構 Lead 歷史。
+10. production 不執行 `seedDemoData()`；完整 deployment 操作與 manifest 切換方式見 `apps-script/README.md`。
 
 ### 正式引薦方上線資料
 
@@ -126,6 +127,9 @@ Pages build 只把這個公開 API origin 寫入 `runtime-config.js`。沒有設
 - 合格投資人＋逐案 allowlist：未通過任一層不得取得保護 payload 或 R2 key。
 - 認購：申請、營運確認、合作方核准、入金、分配、退款五組狀態／金額與 audit。
 - 引薦與分潤：至少兩位引薦方、有效／未知／過期 code、claimed／verified、改派只影響未來認購、快照不回寫、final allocation 計提、核准／付款／作廢證據、paid 不可逆、會員端無分潤欄位。
+- 潛客名單：以同批次來源證據匯入至少兩筆、phone/email 格式化重複、第二導入者衝突、會員綁定、合作到期後業績仍歸屬但不產生新分潤，並核對 `lead-export-v1`。
+- 內容與媒合：draft／未來發布／缺風險提示不得公開；qualified 專案更新需逐案權限；未發布、撤回、關閉與截止專案不得出現在媒合。
+- 每日摘要：站內五金額固定可讀；LINE／Email 分別 opt-in、撤回、同日重跑、Email quota 延後續送；外部訊息不含姓名、會員編號或金額，並以真實收件匣／LINE read-back 證明送達。
 - LINE：例行通知自動送達；拒絕、退款、bulk 人工確認；失敗重試 3 次後進待辦。
 - Pitch Deck：5 分鐘到期、同 session、個人化／稽核；LINE in-app browser 使用 inline／另開瀏覽器，不依賴 `download` attribute。
 - 關閉帳戶：非必要資料刪除或去識別，法定認購與稽核紀錄封存。

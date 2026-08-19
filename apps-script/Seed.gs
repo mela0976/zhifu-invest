@@ -2,7 +2,8 @@
 
 function seedDemoData() {
   return withStoreLock_(function () {
-    ['Members', 'Projects', 'Subscriptions', 'Referrers', 'Bookings', 'Activations', 'Notifications', 'Audits']
+    ['Members', 'Projects', 'Subscriptions', 'Referrers', 'Bookings', 'Activations', 'Notifications', 'Audits',
+      'Prospects', 'ContentItems', 'NewsletterPreferences', 'DailyDigests']
       .forEach(function (sheetName) {
         if (storeList_(sheetName).length) {
           throw domainError_('Demo seed refused because ' + sheetName + ' already contains data', 'seed_requires_empty_workbook', 409);
@@ -56,7 +57,7 @@ function seedDemoData() {
           filename: 'DEMO-' + id + '-pitch-deck.pdf',
           contentType: 'application/pdf'
         },
-        memberAllowlist: []
+        memberAllowlist: [], status: 'published', publishedAt: now, withdrawnAt: ''
       };
     });
     var members = Array.from({ length: 30 }, function (_, index) {
@@ -82,6 +83,11 @@ function seedDemoData() {
           'project-' + String((index % 6) + 1).padStart(2, '0'),
           'project-' + String(((index + 1) % 6) + 1).padStart(2, '0')
         ],
+        investmentPreferences: {
+          industries: [industries[index % industries.length]],
+          minimumTicketTwd: 500000,
+          maximumTicketTwd: 1500000
+        },
         referralAttribution: {
           referrerId: referrer.id, referralCode: referrer.code, state: 'verified',
           evidenceReference: 'DEMO-R-' + String(number).padStart(4, '0'),

@@ -1,6 +1,6 @@
 # 致富投資
 
-Mobile-first investment membership, referral attribution, commission ledger, and subscription-operations MVP for 引薦人 plus approved high-net-worth investor referral networks. The local build is a real permissioned workflow with Demo identity and notification adapters; production providers can be enabled through environment variables without moving secrets into browser code.
+Mobile-first investment membership, prospect acquisition attribution, referral commission ledger, daily investment digest, content publishing, project matching, and subscription-operations MVP for 引薦人 plus approved high-net-worth investor referral networks. The local build is a real permissioned workflow with Demo identity and notification adapters; production providers can be enabled through environment variables without moving secrets into browser code.
 
 > Demo content is fictional and is not an offer, solicitation, investment recommendation, or record of real performance.
 
@@ -60,8 +60,8 @@ When the repository variable `PUBLIC_API_BASE_URL` points to the production Clou
 ## Demo roles
 
 - Visitor: public educational content and anonymized project teasers.
-- Member: use the Demo member action to see only that member's projects, amounts, timeline, bookings, and secure deck access.
-- Operations dashboard: use the Demo admin action to operate confirmations, verify member referrers, manage referral partners and immutable commission snapshots, record qualification evidence and per-project access, update the five amount fields, inspect bookings, retry notifications, export CSV, and inspect audit history.
+- Member: use the Demo member action to see only that member's projects, amounts, timeline, personalized daily digest, published investment content, explainable project matches, bookings, and secure deck access.
+- Operations dashboard: use the Demo admin action to import prospects with immutable acquisition ownership, link conversions, publish investment videos/articles/project updates, preview daily digests, operate confirmations, verify member referrers, manage immutable commission snapshots, record qualification evidence and per-project access, inspect attributed performance, retry notifications, export CSV, and inspect audit history.
 
 No shared password is embedded in the repository. Demo sign-in calls a local-only endpoint and receives the same signed, HttpOnly session shape used by the LINE provider adapter.
 
@@ -85,10 +85,13 @@ The Docker build runs these boundaries in one Node process for local acceptance.
 - LINE Login and Messaging API channels must be owned by the operating entity and created under the same LINE Provider.
 - `LINE_OPERATIONS_USER_ID` and `LINE_COMPLIANCE_USER_ID` are optional server-only notification targets. If they are not configured in live mode, internal notifications stay in the operations queue instead of being sent to an unknown recipient.
 - Public analytics must never receive names, phone numbers, LINE user IDs, member IDs, subscription amounts, or document identifiers.
+- Prospect imports require a named acquisition owner, source evidence, and privacy-notice evidence. A later import must never silently replace the first valid attribution.
+- Daily digest consent and marketing consent are independent and default off. Withdrawing either consent cannot disable required transaction notifications.
+- External LINE/email digests contain no personal investment amounts or member identifiers; detailed progress remains behind the authenticated member portal.
 - Licensed-partner qualification and acceptance happen outside this MVP. The dashboard records the approver, approval time, and reference evidence; it does not create legal approval on its own.
 - Production publication of privacy, risk, AI, membership, and investment language requires review by the licensed partner or counsel.
 - Production admin uses the Apps Script HtmlService deployment with Google allowlist plus a separate TOTP gate. Configure at least two administrators; do not point `ADMIN_DASHBOARD_URL` back to the GitHub Pages Demo admin.
 
 ## Confirmed scope
 
-See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements. The immutable attribution and commission rules are in [docs/REFERRAL_COMMISSION_MODEL.md](docs/REFERRAL_COMMISSION_MODEL.md). The credential setup, deployment order, and live acceptance checklist are in [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). If a LINE secret or token may have been disclosed, follow [docs/LINE_CREDENTIAL_ROTATION.md](docs/LINE_CREDENTIAL_ROTATION.md) before deployment. Implemented, locally verified, and still-external items are separated in [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).
+See [docs/PRD.md](docs/PRD.md) for the product baseline and acceptance requirements. Prospect ownership, digest consent, content visibility, and matching rules are in [docs/LEAD_DIGEST_MATCHING_MODEL.md](docs/LEAD_DIGEST_MATCHING_MODEL.md). The immutable referral commission rules are in [docs/REFERRAL_COMMISSION_MODEL.md](docs/REFERRAL_COMMISSION_MODEL.md). The credential setup, deployment order, and live acceptance checklist are in [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). If a LINE secret or token may have been disclosed, follow [docs/LINE_CREDENTIAL_ROTATION.md](docs/LINE_CREDENTIAL_ROTATION.md) before deployment. Implemented, locally verified, and still-external items are separated in [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).

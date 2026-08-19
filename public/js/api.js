@@ -1,4 +1,14 @@
-import { demoAdmin, demoMember, demoProjects, demoSubscriptions } from './demo-data.js';
+import {
+  demoAdmin,
+  demoContent,
+  demoDigest,
+  demoLeads,
+  demoMatches,
+  demoMember,
+  demoNewsletterPreferences,
+  demoProjects,
+  demoSubscriptions,
+} from './demo-data.js';
 
 const browserWindow = typeof window === 'undefined' ? null : window;
 const currentLocation = browserWindow?.location || { hostname: '', pathname: '/' };
@@ -82,6 +92,125 @@ function isMutation(method = 'GET') {
 
 export function shouldRejectStaticWrite(mode, method = 'GET') {
   return mode === 'static-preview' && isMutation(method);
+}
+
+export function filterPublicSafeContent(items = [], now = Date.now()) {
+  const nowMs = now instanceof Date ? now.getTime() : typeof now === 'number' ? now : Date.parse(now);
+  const comparisonTime = Number.isFinite(nowMs) ? nowMs : Date.now();
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const publishedAt = Date.parse(item?.publishedAt || '');
+    return item?.status === 'published'
+      && item?.publicSafe === true
+      && item?.visibility === 'public'
+      && Boolean(String(item?.riskDisclosure || item?.riskNotice || '').trim())
+      && Number.isFinite(publishedAt)
+      && publishedAt <= comparisonTime;
+  });
+}
+
+function unwrapApiData(value) {
+  return value?.data ?? value ?? null;
+}
+
+function dtoList(value, keys = []) {
+  const root = unwrapApiData(value);
+  if (Array.isArray(root)) return root;
+  for (const key of keys) {
+    if (Array.isArray(root?.[key])) return root[key];
+  }
+  return [];
+}
+
+function normalizeDigestProgress(progress) {
+  const items = Array.isArray(progress) ? progress : progress?.items || [];
+  const source = Array.isArray(progress) ? progress.reduce((totals, item) => {
+    const depositPaid = Number(item.depositPaidAmountTwd ?? item.receivedAmountTwd ?? item.receivedAmount ?? item.received ?? 0);
+    const accountRecorded = Number(item.accountRecordedAmountTwd ?? Math.max(0, depositPaid - Number(item.refundedAmountTwd ?? item.refundedAmount ?? item.refunded ?? 0)));
+    return {
+      requestedAmountTwd: totals.requestedAmountTwd + Number(item.requestedAmountTwd ?? item.requestedAmount ?? item.requested ?? 0),
+      approvedAmountTwd: totals.approvedAmountTwd + Number(item.approvedAmountTwd ?? item.approvedAmount ?? item.approved ?? 0),
+      depositPaidAmountTwd: totals.depositPaidAmountTwd + depositPaid,
+      accountRecordedAmountTwd: totals.accountRecordedAmountTwd + accountRecorded,
+      allocatedAmountTwd: totals.allocatedAmountTwd + Number(item.allocatedAmountTwd ?? item.allocatedAmount ?? item.allocated ?? 0),
+    };
+  }, {
+    requestedAmountTwd: 0,
+    approvedAmountTwd: 0,
+    depositPaidAmountTwd: 0,
+    accountRecordedAmountTwd: 0,
+    allocatedAmountTwd: 0,
+  }) : progress || {};
+  const depositPaidAmountTwd = Number(source.depositPaidAmountTwd ?? source.receivedAmountTwd ?? source.receivedAmount ?? source.received ?? 0);
+  return {
+    ...source,
+    requestedAmountTwd: Number(source.requestedAmountTwd ?? source.requestedAmount ?? source.requested ?? 0),
+    approvedAmountTwd: Number(source.approvedAmountTwd ?? source.approvedAmount ?? source.approved ?? 0),
+    depositPaidAmountTwd,
+    accountRecordedAmountTwd: Number(source.accountRecordedAmountTwd
+      ?? Math.max(0, depositPaidAmountTwd - Number(source.refundedAmountTwd ?? source.refundedAmount ?? source.refunded ?? 0))),
+    allocatedAmountTwd: Number(source.allocatedAmountTwd ?? source.allocatedAmount ?? source.allocated ?? 0),
+    items,
+  };
+}
+
+export function normalizeDigestDto(value) {
+  const root = unwrapApiData(value);
+  const raw = root?.digest ?? root;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return {
+    ...raw,
+    date: raw.date || raw.digestDate || '',
+    investmentProgress: normalizeDigestProgress(raw.investmentProgress || raw.fiveAmountProgress || raw.progress),
+    contentItems: dtoList(raw, ['contentItems', 'content', 'newContent']),
+    matchedProjects: dtoList(raw, ['matchedProjects', 'matches', 'projectMatches', 'recommendations']),
+  };
+}
+
+export function normalizeNewsletterPreferencesDto(value) {
+  const root = unwrapApiData(value) || {};
+  const raw = root.preferences || root.preference || root;
+  const channels = Array.isArray(raw.deliveryChannels)
+    ? [...new Set(['in_app', ...raw.deliveryChannels.filter((item) => ['line', 'email'].includes(item))])]
+    : ['in_app', ...(raw.deliveryChannels?.line ? ['line'] : []), ...(raw.deliveryChannels?.email ? ['email'] : [])];
+  const availability = (key) => {
+    const candidates = [raw[key], root[key], value?.[key]];
+    return candidates.find((candidate) => typeof candidate === 'boolean');
+  };
+  return {
+    ...raw,
+    dailyDigestConsent: Boolean(raw.dailyDigestConsent),
+    marketingConsent: Boolean(raw.marketingConsent),
+    lineDeliveryConsent: Boolean(raw.lineDeliveryConsent ?? channels.includes('line')),
+    emailDeliveryConsent: Boolean(raw.emailDeliveryConsent ?? channels.includes('email')),
+    deliveryChannels: channels,
+    lineAvailable: availability('lineAvailable'),
+    emailAvailable: availability('emailAvailable'),
+  };
+}
+
+function mergeDtoLists(primary, secondary) {
+  const merged = new Map();
+  [...primary, ...secondary].forEach((item, index) => {
+    const key = item?.id || item?.projectId || item?.url || item?.title || `item-${index}`;
+    if (!merged.has(key)) merged.set(key, item);
+  });
+  return [...merged.values()];
+}
+
+export function normalizeDailyExperienceDto({ digestResult, contentResult, matchResult, preferenceResult } = {}) {
+  const digest = normalizeDigestDto(digestResult);
+  return {
+    digest,
+    contentFeed: mergeDtoLists(
+      dtoList(contentResult, ['content', 'contentItems', 'items']),
+      digest?.contentItems || [],
+    ),
+    matches: mergeDtoLists(
+      dtoList(matchResult, ['matches', 'matchedProjects', 'items']),
+      digest?.matchedProjects || [],
+    ),
+    preferences: normalizeNewsletterPreferencesDto(preferenceResult),
+  };
 }
 
 function staticWriteError() {
@@ -331,6 +460,62 @@ export const api = {
   updateCommission: (subscriptionId, input) => request(`/api/admin/commissions/${encodeURIComponent(subscriptionId)}`, {
     method: 'PATCH', body: input,
   }),
+
+  adminLeads: () => withDemoFallback('admin leads', () => ({ leads: structuredClone(demoLeads) }))(
+    () => request('/api/admin/leads'),
+  ),
+
+  createLead: (input) => request('/api/admin/leads', { method: 'POST', body: input }),
+
+  importLeads: (input) => request('/api/admin/leads/import', { method: 'POST', body: input }),
+
+  updateLead: (id, input) => request(`/api/admin/leads/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: input,
+  }),
+
+  adminMatches: () => withDemoFallback('admin matches', () => ({ matches: structuredClone(demoMatches) }))(
+    () => request('/api/admin/matches'),
+  ),
+
+  adminContent: () => withDemoFallback('admin content', () => ({ content: structuredClone(demoContent) }))(
+    () => request('/api/admin/content'),
+  ),
+
+  createContent: (input) => request('/api/admin/content', { method: 'POST', body: input }),
+
+  updateContent: (id, input) => request(`/api/admin/content/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: input,
+  }),
+
+  newsletterPreview: () => withDemoFallback('newsletter preview', () => structuredClone(demoDigest))(
+    () => request('/api/admin/newsletters/preview'),
+  ),
+
+  generateNewsletter: (input) => request('/api/admin/newsletters/generate', { method: 'POST', body: input }),
+
+  newsletterPreferences: () => withDemoFallback('newsletter preferences', () => structuredClone(demoNewsletterPreferences))(
+    () => request('/api/newsletter/preferences'),
+  ),
+
+  updateNewsletterPreferences: (input) => request('/api/newsletter/preferences', { method: 'PATCH', body: input }),
+
+  digestToday: () => withDemoFallback('member digest', () => structuredClone(demoDigest))(
+    () => request('/api/digest/today'),
+  ),
+
+  matches: () => withDemoFallback('member matches', () => ({ matches: structuredClone(demoMatches) }))(
+    () => request('/api/matches'),
+  ),
+
+  contentFeed: () => withDemoFallback('member content feed', () => ({ content: structuredClone(demoContent.filter((item) => item.status === 'published')) }))(
+    () => request('/api/content/feed'),
+  ),
+
+  publicContentFeed: () => withDemoFallback('public content feed', () => ({
+    content: structuredClone(filterPublicSafeContent(demoContent)),
+  }))(
+    () => request('/api/content/public'),
+  ),
 
   sendNotification: (input) => request('/api/admin/notifications', { method: 'POST', body: input }),
 

@@ -12,6 +12,7 @@ The product is not an online securities transaction or payment system. Contracts
 - Member: LINE-authenticated, manually confirmed by 引薦人, sees only their own records.
 - Qualified member: gains access only to specifically authorized projects.
 - Referrer: an approved introducer or partner whose source code may be attached to a member; the MVP does not expose investor identities, amounts, or portfolio data to this role.
+- Prospect: a potential investor imported with source/privacy evidence before membership activation; the first valid acquisition owner remains attached through conversion.
 - 引薦人 / operations: confirms community membership, records subscription and financial milestones, operates notifications and exports.
 - Licensed partner: approves regulated content, investor qualification, and accepted amounts outside the system; operations must record the approver, date, and reference number.
 - Finance: represented as an auditable operation when actual receipt, allocation, or refund is recorded.
@@ -25,6 +26,9 @@ The product is not an online securities transaction or payment system. Contracts
 5. Allocation: pending → partial → final.
 6. Referral attribution: claimed → verified / rejected. A source code creates only a claim; operations must verify evidence before it can be snapshotted into a subscription.
 7. Commission: not applicable / pending → accrued → approved → paid, or void. Approval and payment require separate evidence, and paid records are immutable.
+8. Prospect: new → contacted → qualified → converted / archived. Acquisition ownership is immutable after evidence-backed import.
+9. Content: draft → published / withdrawn. Public visibility additionally requires `publicSafe`; restricted project updates re-check member access.
+10. Daily digest: preview → generated → queued / partially sent / sent. One member/date record is idempotent; LINE and Email deliveries require explicit digest consent.
 
 Each subscription stores requested, approved, received, allocated, and refunded TWD amounts. Every mutation appends an application-level append-only audit event with actor, time, before/after values, and reason. Google Sheets is not a WORM store; a regulated retention lock requires a separate production audit service.
 
@@ -37,6 +41,7 @@ When a member submits a subscription, the system copies the verified referrer, a
 - Landing page, public project teasers, advisors, expert content, video library, advisory booking, legal/privacy pages.
 - LINE member activation and official-account friendship path.
 - Member home, permitted projects, project detail, report and Pitch Deck access, subscription application, personal portfolio, qualification state, appointments, settings and membership tier.
+- Personalized daily investment digest, published investment videos/articles/project updates, explainable project matches, and separate digest/marketing preferences.
 - Mobile bottom navigation: Home, Projects, My investments, More.
 
 ### 引薦人 dashboard
@@ -47,6 +52,7 @@ When a member submits a subscription, the system copies the verified referrer, a
 - Project, subscription, received amount, allocation and refund management.
 - Referrer registry, member attribution verification, immutable subscription referral snapshots, projected commission, approval evidence and payment evidence.
 - Content/video/report administration, appointments, notifications, CSV export and audit history.
+- Prospect single/bulk import, acquisition evidence and immutable owner, member conversion link, attributed-performance KPIs, content publishing, match review, and daily-digest preview/generation.
 
 ## LINE
 
@@ -63,6 +69,7 @@ When a member submits a subscription, the system copies the verified referrer, a
 - Project visibility is configurable; the default public view is anonymized.
 - AI and expert reports remain distinct, versioned, dated and reviewer-labelled. AI material requires expert approval before release.
 - Short videos are produced externally and embedded or published by URL in the MVP.
+- Public feeds expose only published public-safe content. Member feeds and matching re-apply qualification and per-project authorization.
 - Secure Pitch Deck access uses expiring authorization, personalized watermarking and an audit log.
 - All current companies, people, amounts and performance values are clearly labelled Demo content until authorized assets arrive.
 
@@ -78,4 +85,4 @@ When a member submits a subscription, the system copies the verified referrer, a
 
 ## Acceptance
 
-Completion requires real mobile/browser validation, LINE login and OA delivery, manual membership confirmation, gated project access, end-to-end subscription amount tracking, immutable referral snapshots, evidence-gated commission approval/payment, expiring document access, per-member/referrer privacy, auditable admin exports, privacy-safe analytics, deployed GitHub Pages, and proof that no secrets or real member data entered the repository.
+Completion requires real mobile/browser validation, evidence-backed prospect import and immutable acquisition ownership, prospect-to-member conversion, daily in-app digest plus consented LINE/email delivery, published investment video/content feeds, explainable project matching, LINE login and OA delivery, manual membership confirmation, gated project access, end-to-end subscription amount tracking, immutable referral snapshots, evidence-gated commission approval/payment, expiring document access, per-member/referrer/prospect privacy, auditable admin exports, privacy-safe analytics, deployed GitHub Pages, and proof that no secrets or real member data entered the repository.

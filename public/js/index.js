@@ -10,6 +10,11 @@ const dialogBody = document.querySelector('#project-dialog-body');
 let projects = [];
 let activeFilter = 'all';
 
+function safeExternalUrl(value) {
+  try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : ''; }
+  catch { return ''; }
+}
+
 function normalizeProjects(payload) {
   if (Array.isArray(payload)) return payload;
   return payload?.projects || payload?.items || [];
@@ -77,6 +82,20 @@ async function loadProjects() {
   }
 }
 
+async function loadPublicVideos() {
+  const target = document.querySelector('#public-video-feed');
+  if (!target) return;
+  try {
+    const result = await api.publicContentFeed();
+    const data = result.data || result;
+    const items = (Array.isArray(data) ? data : data?.content || data?.items || [])
+      .filter((item) => item.type === 'video' && item.status === 'published' && item.publicSafe === true && safeExternalUrl(item.videoUrl || item.url));
+    target.innerHTML = items.length ? items.slice(0, 3).map((item, index) => `<article class="landing-video-card" data-testid="public-video"><span>VIDEO / ${String(index + 1).padStart(2, '0')}</span><h4>${escapeHtml(t(item.title))}</h4><p>${escapeHtml(t(item.summary || ''))}</p><a href="${escapeHtml(safeExternalUrl(item.videoUrl || item.url))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(t(`觀看${item.title}`))}">觀看影音 <b aria-hidden="true">↗</b></a><small>${escapeHtml(t(item.riskNotice || item.riskDisclosure || '一般研究資訊，不構成投資建議。'))}</small></article>`).join('') : emptyState('目前沒有公開影音', '完成內容核准與公開安全檢核後，最新影音會顯示在這裡。');
+  } catch (error) {
+    target.innerHTML = errorState('投資影音暫時無法載入', '稍後重新整理即可；募資研究索引不受影響。');
+  }
+}
+
 filters.addEventListener('click', (event) => {
   const chip = event.target.closest('[data-filter]');
   if (!chip) return;
@@ -108,3 +127,4 @@ document.querySelector('#booking-form')?.addEventListener('submit', async (event
 
 initShell();
 loadProjects();
+loadPublicVideos();

@@ -1,4 +1,4 @@
-import { api, appUrl } from './api.js';
+import { api, appUrl, normalizeDailyExperienceDto, normalizeNewsletterPreferencesDto } from './api.js';
 import { emptyState, errorState, escapeHtml, formatDate, formatMoney, initShell, openDialog, closeDialog, setButtonBusy, sourceNotice, toast } from './common.js';
 import { statusLabels } from './demo-data.js';
 import { protectedProjectContent } from './project-content.js';
@@ -7,6 +7,10 @@ let member = {};
 let projects = [];
 let subscriptions = [];
 let bookings = [];
+let digest = null;
+let contentFeed = [];
+let matches = [];
+let newsletterPreferences = { dailyDigestConsent: false, marketingConsent: false, channelAvailable: false };
 let selectedProject = null;
 let submissionKey = null;
 let activeProjectFilter = 'all';
@@ -67,13 +71,90 @@ function renderIdentity() {
   const name = member.name || member.displayName || '會員';
   const id = member.id || member.memberId || 'M-——';
   identity.dataset.memberId = id;
-  identity.innerHTML = `<div class="identity-card__top"><span class="mono micro" style="color:#c4cdd3">MEMBER CREDENTIAL</span><span class="status status--success">${member.lineFriend === false ? 'LINE 未加好友' : 'LINE 已連結'}</span></div><h2>${escapeHtml(name)}</h2><p>${escapeHtml(member.source || '社群來源待確認')}</p><div class="identity-card__meta"><div><span>會員方案</span><strong>${escapeHtml(member.tier || '一般會員')}</strong></div><div><span>會員編號</span><strong class="mono">${escapeHtml(id)}</strong></div></div>`;
+  identity.innerHTML = `<div class="identity-card__top"><span class="mono micro" style="color:#c4cdd3">MEMBER CREDENTIAL</span><span class="status status--success">${member.lineFriend === false ? 'LINE 未加好友' : 'LINE 已連結'}</span></div><h2>${escapeHtml(name)}</h2><p>會員身分與 LINE 連結狀態</p><div class="identity-card__meta"><div><span>會員方案</span><strong>${escapeHtml(member.tier || '一般會員')}</strong></div><div><span>會員編號</span><strong class="mono">${escapeHtml(id)}</strong></div></div>`;
   document.querySelector('#header-name').textContent = name;
   document.querySelector('#header-initial').textContent = name.slice(0, 1);
   document.querySelector('#settings-name').textContent = name;
   document.querySelector('#settings-phone').textContent = member.maskedPhone || member.phone || '手機號碼已遮罩';
   document.querySelector('#tier-status').textContent = member.tier || '一般會員';
   qualification && (document.querySelector('#qualification').innerHTML = `<div class="qualification__head"><h3>合格投資人資格</h3><span class="status" data-status="${escapeHtml(qualification.status)}">${escapeHtml(qualification.label || statusLabel(qualification.status))}</span></div><dl><dt>審核機構</dt><dd>${escapeHtml(qualification.organization || '待確認')}</dd><dt>核准日期</dt><dd>${formatDate(qualification.approvedAt)}</dd><dt>有效期限</dt><dd>${formatDate(qualification.expiresAt)}</dd><dt>參考編號</dt><dd class="mono">${escapeHtml(qualification.reference || '尚未登錄')}</dd></dl>`);
+}
+
+function digestTotals() {
+  const supplied = digest?.fiveAmountProgress || digest?.amounts || digest?.investmentProgress;
+  if (supplied) return {
+    requestedAmount: supplied.requestedAmount ?? supplied.requestedAmountTwd ?? supplied.requested ?? 0,
+    approvedAmount: supplied.approvedAmount ?? supplied.approvedAmountTwd ?? supplied.approved ?? 0,
+    receivedAmount: supplied.receivedAmount ?? supplied.depositPaidAmountTwd ?? supplied.received ?? 0,
+    allocatedAmount: supplied.allocatedAmount ?? supplied.allocatedAmountTwd ?? supplied.allocated ?? 0,
+    refundedAmount: supplied.refundedAmount ?? supplied.refundedAmountTwd ?? supplied.refunded
+      ?? Math.max(0, Number(supplied.depositPaidAmountTwd || 0) - Number(supplied.accountRecordedAmountTwd || 0)),
+  };
+  return subscriptions.reduce((sum, item) => ({
+    requestedAmount: sum.requestedAmount + Number(item.requestedAmount || 0),
+    approvedAmount: sum.approvedAmount + Number(item.approvedAmount || 0),
+    receivedAmount: sum.receivedAmount + Number(item.receivedAmount || 0),
+    allocatedAmount: sum.allocatedAmount + Number(item.allocatedAmount || 0),
+    refundedAmount: sum.refundedAmount + Number(item.refundedAmount || 0),
+  }), { requestedAmount: 0, approvedAmount: 0, receivedAmount: 0, allocatedAmount: 0, refundedAmount: 0 });
+}
+
+function safeExternalUrl(value) {
+  try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : ''; }
+  catch { return ''; }
+}
+
+function renderTodayDigest() {
+  const totals = digestTotals();
+  document.querySelector('#today-digest').dataset.digestDate = digest?.date || '';
+  document.querySelector('#digest-headline').textContent = digest?.headline || '今天沒有需要你立即處理的投資更新。';
+  document.querySelector('#digest-amounts').innerHTML = [
+    ['申請', totals.requestedAmount], ['核准', totals.approvedAmount], ['入金', totals.receivedAmount], ['分配', totals.allocatedAmount], ['退款', totals.refundedAmount],
+  ].map(([label, value], index) => `<div class="digest-amount ${Number(value || 0) > 0 && index > 0 ? 'is-progress' : ''}"><span>${label}</span><strong>${formatMoney(value, true)}</strong></div>`).join('');
+  const items = contentFeed.filter((item) => item.status === 'published');
+  document.querySelector('#digest-content-feed').innerHTML = items.length ? items.slice(0, 4).map((item) => {
+    const url = safeExternalUrl(item.videoUrl || item.url);
+    const action = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="開啟${escapeHtml(item.title)}">閱讀<span aria-hidden="true">↗</span></a>` : '';
+    return `<article class="digest-item" data-testid="member-content-item"><div><span>${item.type === 'video' ? 'VIDEO' : item.type === 'project_update' ? 'UPDATE' : 'ARTICLE'}</span><h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.summary || '')}</p></div>${action}<small>${escapeHtml(item.riskNotice || item.riskDisclosure || '一般資訊，不構成投資建議。')}</small></article>`;
+  }).join('') : emptyState('今天沒有新內容', '已發布且符合你權限的內容會出現在這裡。');
+  document.querySelector('#digest-match-feed').innerHTML = matches.length ? matches.slice(0, 3).map((item) => {
+    const reasonList = (Array.isArray(item.reasons) ? item.reasons : []).map((reason) => typeof reason === 'string' ? reason : reason?.label || reason?.reason || '').filter(Boolean);
+    const reason = item.reason || item.matchReason || reasonList.join('、') || '依明確產業偏好、金額級距、資格與逐案權限排序。';
+    return `<article class="digest-item digest-item--match" data-testid="member-match"><div><span>MATCH ${Number(item.score || 0)}</span><h4>${escapeHtml(item.projectName || item.displayName || item.title || item.projectId)}</h4><p>${escapeHtml(reason)}</p></div><button class="button button--quiet button--small" type="button" data-go-view="projects">查看專案</button><small>推薦是研究排序，不代表適合度或獲利保證。</small></article>`;
+  }).join('') : emptyState('今天沒有新推薦', '推薦只用來協助整理研究順序，不是投資建議。');
+}
+
+function syncDailyConsentControl() {
+  const daily = document.querySelector('#daily-digest-consent');
+  const line = document.querySelector('#digest-channel-line');
+  const email = document.querySelector('#digest-channel-email');
+  const selected = (!line.disabled && line.checked) || (!email.disabled && email.checked);
+  daily.disabled = !selected;
+  if (!selected) daily.checked = false;
+  document.querySelector('#daily-digest-channel-note').textContent = selected
+    ? '已選擇可用管道；開啟後才會收到站外摘要'
+    : '至少選擇一個可用管道才能開啟';
+}
+
+function renderNewsletterPreferences() {
+  const daily = document.querySelector('#daily-digest-consent');
+  const marketing = document.querySelector('#marketing-consent');
+  const line = document.querySelector('#digest-channel-line');
+  const email = document.querySelector('#digest-channel-email');
+  const configuredChannels = newsletterPreferences.deliveryChannels || newsletterPreferences.channels || {};
+  const channelHas = (key) => Array.isArray(configuredChannels) ? configuredChannels.includes(key) : Boolean(configuredChannels[key]);
+  const lineAvailable = newsletterPreferences.lineAvailable ?? member.lineFriend === true;
+  const emailAvailable = newsletterPreferences.emailAvailable ?? member.emailAvailable === true;
+  line.disabled = !lineAvailable;
+  email.disabled = !emailAvailable;
+  line.checked = Boolean(lineAvailable && (newsletterPreferences.lineDeliveryConsent ?? channelHas('line')));
+  email.checked = Boolean(emailAvailable && (newsletterPreferences.emailDeliveryConsent ?? channelHas('email')));
+  daily.checked = Boolean(newsletterPreferences.dailyDigestConsent);
+  marketing.checked = Boolean(newsletterPreferences.marketingConsent);
+  syncDailyConsentControl();
+  document.querySelector('#preferences-status').textContent = newsletterPreferences.updatedAt
+    ? `最近更新：${formatDate(newsletterPreferences.updatedAt)}`
+    : '站內摘要固定開啟；兩項外部同意彼此獨立。';
 }
 
 function renderProjects() {
@@ -117,6 +198,25 @@ async function loadBookings() {
   } catch (error) {
     target.innerHTML = errorState('目前無法讀取預約', '預約資料未納入本頁載入條件；其他會員資料不受影響。', 'booking-retry');
     document.querySelector('#booking-retry')?.addEventListener('click', loadBookings);
+  }
+}
+
+async function loadDailyExperience() {
+  try {
+    const [digestResult, contentResult, matchResult, preferenceResult] = await Promise.all([
+      api.digestToday(), api.contentFeed(), api.matches(), api.newsletterPreferences(),
+    ]);
+    const experience = normalizeDailyExperienceDto({ digestResult, contentResult, matchResult, preferenceResult });
+    digest = experience.digest;
+    contentFeed = experience.contentFeed.filter((item) => item.status === 'published');
+    matches = experience.matches;
+    newsletterPreferences = experience.preferences;
+    renderTodayDigest();
+    renderNewsletterPreferences();
+  } catch (error) {
+    document.querySelector('#digest-content-feed').innerHTML = errorState('今日內容暫時無法讀取', '既有投資紀錄不受影響。');
+    document.querySelector('#digest-match-feed').innerHTML = emptyState('推薦正在更新', '稍後重新載入會員中心。');
+    document.querySelector('#preferences-status').textContent = `偏好設定無法讀取：${error.message}`;
   }
 }
 
@@ -204,6 +304,7 @@ async function loadDashboard() {
     }));
     sourceNotice(result.source, document.querySelector('#member-source'));
     renderIdentity(); renderProjects(); renderSubscriptions();
+    loadDailyExperience();
     loadBookings();
   } catch (error) {
     if (error.status === 401) { window.location.href = appUrl('/activate.html'); return; }
@@ -251,6 +352,39 @@ document.querySelector('#subscription-form').addEventListener('submit', async (e
     if (newRecord?.id) subscriptionDialog.dataset.createdRecordId = newRecord.id;
   } catch (error) {
     document.querySelector('#subscription-result').innerHTML = `<p class="field__error">未送出：${escapeHtml(error.message)}</p>`;
+  } finally { setButtonBusy(button, false); }
+});
+
+['digest-channel-line', 'digest-channel-email'].forEach((id) => document.querySelector(`#${id}`).addEventListener('change', syncDailyConsentControl));
+
+document.querySelector('#newsletter-preferences-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  const daily = document.querySelector('#daily-digest-consent');
+  const marketing = document.querySelector('#marketing-consent');
+  const line = document.querySelector('#digest-channel-line');
+  const email = document.querySelector('#digest-channel-email');
+  setButtonBusy(button, true, '正在儲存…');
+  try {
+    const lineDeliveryConsent = !line.disabled && line.checked;
+    const emailDeliveryConsent = !email.disabled && email.checked;
+    const payload = {
+      dailyDigestConsent: (lineDeliveryConsent || emailDeliveryConsent) && daily.checked,
+      marketingConsent: marketing.checked,
+      lineDeliveryConsent,
+      emailDeliveryConsent,
+      deliveryChannels: ['in_app', ...(lineDeliveryConsent ? ['line'] : []), ...(emailDeliveryConsent ? ['email'] : [])],
+    };
+    const result = await api.updateNewsletterPreferences(payload);
+    newsletterPreferences = { ...newsletterPreferences, ...payload, ...normalizeNewsletterPreferencesDto(result) };
+    renderNewsletterPreferences();
+    document.querySelector('#preferences-status').textContent = '通知設定已儲存；站內摘要維持固定開啟。';
+    toast('通知設定已更新。');
+  } catch (error) {
+    renderNewsletterPreferences();
+    document.querySelector('#preferences-status').textContent = `設定未更新：${error.message}`;
+    toast(`通知設定未更新：${error.message}`, 'error');
   } finally { setButtonBusy(button, false); }
 });
 

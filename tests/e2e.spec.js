@@ -170,6 +170,10 @@ test.describe('致富投資 mobile and role journeys', () => {
     ).toBeVisible();
     await expect(page.getByText(/投資.*風險|非.*投資建議|風險揭露/).first()).toBeVisible();
     await expect(page.getByRole('heading', { name: /不是把標的放上網.*而是先把判斷方法說清楚/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '最新投資影音' })).toBeVisible();
+    await expect(page.getByTestId('public-video').first()).toBeVisible();
+    await expect(page.locator('main')).not.toContainText('智慧製造計畫完成新場域驗證');
+    await expect(page.locator('main')).not.toContainText('CONTENT-203');
     expect(await page.locator('.landing-hero__image').evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
 
     const menuToggle = page.locator('[data-menu-toggle]');
@@ -458,6 +462,61 @@ test.describe('致富投資 mobile and role journeys', () => {
     }
   });
 
+  test('member daily experience accepts production Apps wrappers without rendering contact identities', async ({ page }) => {
+    let preferencePatch = null;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route('**/api/digest/today', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        digest: {
+          digestDate: '2026-08-19',
+          progress: [{ requestedAmountTwd: 1_500_000, approvedAmountTwd: 1_200_000, receivedAmountTwd: 900_000, allocatedAmountTwd: 750_000, refundedAmountTwd: 50_000 }],
+          contentItems: [{ id: 'CONTENT-APPS-E2E', type: 'video', status: 'published', title: 'Apps 正式摘要影音', summary: '只呈現已授權內容。', riskDisclosure: '一般研究資訊，不構成投資建議。' }],
+          matches: [{ projectId: 'BIO-2401', displayName: 'Apps 正式媒合專案', score: 88, reasons: [{ label: '明確產業偏好相符' }] }],
+        },
+      }),
+    }));
+    await page.route('**/api/content/feed', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ content: [] }) }));
+    await page.route('**/api/matches', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ matches: [] }) }));
+    await page.route('**/api/newsletter/preferences', async (route) => {
+      const preferences = {
+        dailyDigestConsent: true,
+        marketingConsent: false,
+        deliveryChannels: ['in_app', 'email'],
+      };
+      if (route.request().method() === 'PATCH') {
+        preferencePatch = route.request().postDataJSON();
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ preferences: preferencePatch, emailAvailable: true, lineAvailable: false }) });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ preferences, emailAvailable: true, lineAvailable: false }) });
+    });
+
+    await loginAs(page, 'memberA');
+    await expect(page.getByTestId('member-digest')).toHaveAttribute('data-digest-date', '2026-08-19');
+    await expect(page.getByTestId('member-content-item')).toContainText('Apps 正式摘要影音');
+    await expect(page.getByTestId('member-match')).toContainText('Apps 正式媒合專案');
+    await expect(page.getByTestId('member-match')).toContainText('明確產業偏好相符');
+
+    await page.locator('[data-nav-view="more"]:visible').first().click();
+    await expect(page.getByTestId('digest-channel-email')).toBeEnabled();
+    await expect(page.getByTestId('digest-channel-email')).toBeChecked();
+    await expect(page.getByTestId('digest-channel-line')).toBeDisabled();
+    await page.getByTestId('preferences-save').click();
+    await expect.poll(() => preferencePatch).not.toBeNull();
+    expect(preferencePatch).toEqual({
+      dailyDigestConsent: true,
+      marketingConsent: false,
+      lineDeliveryConsent: false,
+      emailDeliveryConsent: true,
+      deliveryChannels: ['in_app', 'email'],
+    });
+    expect(preferencePatch).not.toHaveProperty('reason');
+    const memberDom = await page.locator('main').innerHTML();
+    expect(memberDom).not.toMatch(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+    await expectNoHorizontalOverflow(page);
+  });
+
   test('引薦人 sees dashboard KPIs and an actionable operations queue', async ({ page }) => {
     await loginAs(page, 'admin');
 
@@ -469,7 +528,10 @@ test.describe('致富投資 mobile and role journeys', () => {
 
     const kpis = page.getByTestId('admin-kpi').or(page.locator('[data-kpi]'));
     await expect(kpis.first(), 'The dashboard should render KPI cards as a stable collection.').toBeVisible();
-    expect(await kpis.count()).toBeGreaterThanOrEqual(2);
+    await expect.poll(
+      () => kpis.count(),
+      { message: 'The dashboard should finish rendering at least two KPI cards.' },
+    ).toBeGreaterThanOrEqual(2);
     await expect(
       page
         .getByTestId('admin-action-queue')
@@ -481,6 +543,116 @@ test.describe('致富投資 mobile and role journeys', () => {
     await expect(page.getByTestId('admin-booking').first()).toBeVisible();
 
     await expectNoHorizontalOverflow(page);
+  });
+
+  test('admin imports evidence-locked leads, publishes content, and member receives a private daily digest', async ({ baseURL, browser }) => {
+    const contextOptions = { baseURL, locale: 'zh-TW', timezoneId: 'Asia/Taipei', viewport: { width: 390, height: 844 } };
+    const adminContext = await browser.newContext(contextOptions);
+    const memberContext = await browser.newContext(contextOptions);
+    const unique = `${Date.now()}`;
+    const leadName = `Playwright 潛客 ${unique.slice(-6)}`;
+    const leadPhone = `09${unique.slice(-8)}`;
+    const sourceReference = `PW-LEAD-${unique}`;
+    const evidenceReference = `PW-PRIVACY-${unique}`;
+    const contentTitle = `Playwright 投資影音 ${unique.slice(-6)}`;
+
+    try {
+      const adminPage = await adminContext.newPage();
+      await loginAs(adminPage, 'admin');
+      await adminPage.getByTestId('admin-leads').filter({ visible: true }).first().click();
+      await expect(adminPage.getByTestId('lead-dashboard')).toBeVisible();
+      await expect(adminPage.getByTestId('lead-row').filter({ visible: true }).first()).toBeVisible();
+      expect(await adminPage.getByTestId('lead-row').filter({ visible: true }).count()).toBeGreaterThanOrEqual(4);
+      const dashboardPayload = await adminPage.evaluate(async () => (await fetch('/api/admin/dashboard')).json());
+      const dashboardData = dashboardPayload.data || dashboardPayload.dashboard || dashboardPayload;
+      const linkCandidate = (dashboardData.members || []).find((item) => item.referralAttribution?.referrerId && !item.leadOwnerAttribution && !['member-001', 'member-002'].includes(item.id));
+      expect(linkCandidate?.id).toBeTruthy();
+      expect(linkCandidate?.referralAttribution?.referrerId).toBeTruthy();
+
+      await adminPage.getByTestId('lead-import-open').click();
+      await adminPage.getByTestId('lead-csv-text').fill(`姓名,聯絡方式,來源管道,唯一來源參考編號\n${leadName},${leadPhone},OpenChat,${sourceReference}`);
+      await adminPage.getByTestId('lead-import-owner').selectOption(linkCandidate.referralAttribution.referrerId);
+      await adminPage.getByTestId('lead-import-evidence').fill(evidenceReference);
+      await adminPage.locator('#lead-import-reason').fill('Playwright：確認來源與隱私同意後批次匯入');
+      await expect(adminPage.locator('#lead-import-preview')).toContainText('準備匯入 1 筆');
+      await expectNoHorizontalOverflow(adminPage);
+      const dialogBounds = await adminPage.locator('#lead-import-dialog').evaluate((dialog) => {
+        const rect = dialog.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight };
+      });
+      expect(dialogBounds.left).toBeGreaterThanOrEqual(0);
+      expect(dialogBounds.right).toBeLessThanOrEqual(dialogBounds.viewportWidth);
+      expect(dialogBounds.top).toBeGreaterThanOrEqual(0);
+      expect(dialogBounds.bottom).toBeLessThanOrEqual(dialogBounds.viewportHeight);
+      await adminPage.getByTestId('lead-import-submit').click();
+      await expect(adminPage.locator('#lead-import-dialog')).not.toBeVisible();
+
+      const leadRow = adminPage.getByTestId('lead-row').filter({ visible: true }).filter({ hasText: leadName }).first();
+      await expect(leadRow).toBeVisible();
+      await expect(leadRow).toContainText(evidenceReference);
+      await leadRow.getByRole('button', { name: '管理潛客' }).click();
+      await expect(adminPage.getByTestId('lead-source-evidence')).toHaveAttribute('readonly', '');
+      await expect(adminPage.getByTestId('lead-owner')).toBeDisabled();
+      await adminPage.getByTestId('lead-member-select').selectOption(linkCandidate.id);
+      await adminPage.locator('#lead-reason').fill('Playwright：完成既有會員連結');
+      await adminPage.getByTestId('lead-save').click();
+      await expect(adminPage.locator('#lead-dialog')).not.toBeVisible();
+      await expectNoHorizontalOverflow(adminPage);
+
+      await adminPage.locator('[data-admin-nav="content"]:visible').first().click();
+      await adminPage.getByTestId('content-create').click();
+      await adminPage.getByLabel('內容類型').selectOption('video');
+      await adminPage.getByLabel('發布狀態').selectOption('draft');
+      await adminPage.getByLabel('標題').fill(contentTitle);
+      await adminPage.getByLabel('HTTPS 內容網址').fill(`https://example.invalid/videos/${unique}`);
+      await adminPage.locator('#content-summary').fill('以公開市場資料說明投資風險與專案進度。');
+      await adminPage.getByLabel('風險提示').fill('投資具風險，過去表現不代表未來結果。');
+      await adminPage.locator('#content-reason').fill('Playwright：建立影音草稿並完成公開安全檢核');
+      await adminPage.getByTestId('content-save').click();
+      await expect(adminPage.locator('#content-dialog')).not.toBeVisible();
+
+      const contentRow = adminPage.getByTestId('content-row').filter({ hasText: contentTitle }).first();
+      await expect(contentRow).toContainText('草稿');
+      await contentRow.getByRole('button', { name: '編輯內容' }).click();
+      await adminPage.getByLabel('發布狀態').selectOption('published');
+      await adminPage.locator('#content-public-safe').check();
+      await adminPage.locator('#content-reason').fill('Playwright：人工確認風險提示與公開安全範圍');
+      await adminPage.getByTestId('content-save').click();
+      await expect(contentRow).toContainText('已發布');
+      await expect(contentRow).toContainText('可顯示');
+      await expect(adminPage.getByTestId('newsletter-preview')).toBeVisible();
+      await adminPage.getByTestId('newsletter-generate').click();
+      await expect(adminPage.locator('.toast-region')).toContainText('摘要已產生');
+      await expect(adminPage.getByTestId('newsletter-preview')).toContainText(/新內容|會員預覽/);
+      await expectNoHorizontalOverflow(adminPage);
+
+      const memberPage = await memberContext.newPage();
+      await loginAs(memberPage, 'memberA');
+      await expect(memberPage.getByTestId('member-digest')).toBeVisible();
+      await expect(memberPage.locator('#digest-amounts .digest-amount')).toHaveCount(5);
+      await expect(memberPage.getByTestId('member-content-item').first()).toBeVisible();
+      await expect(memberPage.getByTestId('member-match').first()).toBeVisible();
+      const memberMainHtml = await memberPage.locator('main').innerHTML();
+      expect(memberMainHtml).not.toMatch(/ownerReferrerId|sourceReference|privacyEvidence|commissionRateBps|commissionAccruedAmountTwd|evidenceReference/);
+      await expectNoHorizontalOverflow(memberPage);
+
+      await memberPage.locator('[data-nav-view="more"]:visible').first().click();
+      const lineChannel = memberPage.getByTestId('digest-channel-line');
+      const emailChannel = memberPage.getByTestId('digest-channel-email');
+      await expect(lineChannel).toBeEnabled();
+      if (await emailChannel.isDisabled()) await expect(emailChannel).not.toBeChecked();
+      await lineChannel.uncheck();
+      await expect(memberPage.getByTestId('daily-digest-consent')).toBeDisabled();
+      await lineChannel.check();
+      await expect(memberPage.getByTestId('daily-digest-consent')).toBeEnabled();
+      await memberPage.getByTestId('daily-digest-consent').check();
+      await memberPage.getByTestId('preferences-save').click();
+      await expect(memberPage.locator('#preferences-status')).toContainText(/已儲存|最近更新/);
+      await expectNoHorizontalOverflow(memberPage);
+    } finally {
+      await adminContext.close();
+      await memberContext.close();
+    }
   });
 
   test('admin attributes a high-value member and settles an immutable referral commission', async ({ baseURL, browser }) => {

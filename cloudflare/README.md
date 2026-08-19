@@ -49,8 +49,8 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | `GET /api/auth/me` profile enrichment | `getMember` | Current member only |
 | `GET /api/projects/:projectId` | `getProject` | Public; Apps Script redacts protected fields |
 | `POST /api/activation` | `createActivation` | Member/Admin |
-| `GET /api/bookings` | `adminList(resource=bookings)` | Admin |
-| `POST /api/bookings` | `createBooking` | Public trusted origin |
+| `GET /api/bookings` | `listBookings` | Member sees own rows; Admin may list all |
+| `POST /api/bookings` | `createBooking` | Public trusted origin；轉接真實表單 `role/name/topic/phone/preferredDate/preferredTime/note/consent` |
 | `GET /api/subscriptions` | `listSubscriptions` | Member/Admin |
 | `POST /api/subscriptions` | `createSubscription` | Member/Admin |
 | `GET /api/admin/dashboard`, `/overview`, `/actions` | `adminDashboard` | Admin |
@@ -67,6 +67,14 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | `POST /api/admin/notifications/:notificationId/send` | `adminApproveNotification` | Admin |
 | `POST /api/admin/notifications/process` | `adminProcessNotifications` | Admin |
 | `GET /api/admin/export[s]/{members,subscriptions,referrers,commissions}.csv` | `adminExport` | Admin |
+| `GET/POST /api/admin/leads`, `POST /api/admin/leads/import`, `PATCH /api/admin/leads/:id` | `adminListProspects` / `adminCreateProspect` / `adminImportProspects` / `adminPatchProspect` | Admin |
+| `GET /api/admin/matches` | `adminListMatches` | Admin |
+| `GET/POST /api/admin/content`, `PATCH /api/admin/content/:id` | `adminListContent` / `adminCreateContent` / `adminPatchContent` | Admin |
+| `GET /api/admin/newsletters/preview`, `POST /api/admin/newsletters/generate` | `adminDigestPreview` / `adminDigestGenerate` | Admin |
+| `GET /api/admin/export/leads.csv` | `adminExportProspects` | Admin |
+| `GET/PATCH /api/newsletter/preferences` | `getNewsletterPreferences` / `patchNewsletterPreferences` | Member |
+| `GET /api/digest/today`, `GET /api/matches`, `GET /api/content/feed` | `getDailyDigest` / `listMatches` / `listContentFeed` | Member |
+| `GET /api/content/public` | `listPublicContent` | Public; only published + publicSafe |
 | LINE callback member mapping | `upsertLineMember` | Worker internal/service |
 | `POST /api/auth/admin` Google + 2FA | `authenticateAdmin` | Worker internal/service |
 | Deck permission check | `authorizeDeck` | Worker internal, authenticated |
@@ -74,6 +82,14 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | Verified LINE webhook | `webhookEvent`，成功後才標記 delivered | Worker internal/service |
 
 每個 `payloadJson` 都含 Worker 產生的 `context`（role、actorId、memberId、requestId），再依 operation 加入明確欄位。Apps Script 不得相信瀏覽器自行提供的會員或角色欄位。
+
+Pages 潛客表單的 `ownerReferrerId`、中文 channel、`sourceReference`、`sourceEvidence`
+會在 Worker 轉為 Apps canonical `acquisitionOwnerId`、channel enum、`source/sourceReference`與
+`privacyEvidence`；未提供的證據擷取時間由 Worker 記錄，notice version 明確標成 `admin-evidence-v1`。
+
+`PATCH /api/newsletter/preferences` 由 Worker 固定審計原因，瀏覽器無法偽造；body 含
+`dailyDigestConsent/marketingConsent/emailDeliveryConsent/lineDeliveryConsent/deliveryChannels`。
+`POST /api/admin/newsletters/generate` 會完整轉送 `send`；`send:false` 只產生站內摘要，不會建立 LINE 或 Email 外送。
 
 分潤 mutation 的 canonical HTTP body 固定為：
 
@@ -139,4 +155,8 @@ npx wrangler deploy --dry-run --config cloudflare/wrangler.jsonc
 
 正式建立資源後，把 placeholder D1 UUID 換成實際 binding ID，再執行 migration 與部署。
 
-`wrangler.jsonc` 已設定 `*/5 * * * *` Cron。部署後請在 Cloudflare Dashboard 確認 Cron Trigger 存在，並用一筆刻意失敗的測試 webhook 驗證 D1 狀態依序為 `retry`、`delivered` 或第三次後 `failed`。
+`wrangler.jsonc` 已設定 `*/5 * * * *` Cron。每次仍先處理 webhook 與 D1 cleanup，再以
+`Asia/Taipei` 日期呼叫冪等 `adminDigestGenerate`；Apps Script 的每日 fallback trigger 也呼叫同一資料規則。
+部署後請在 Cloudflare Dashboard 確認 Cron Trigger 存在，並用一筆刻意失敗的測試 webhook 驗證
+D1 狀態依序為 `retry`、`delivered` 或第三次後 `failed`。另以真實 LINE 裝置與 Email inbox 驗收摘要；
+Worker 成功、Apps Script queue、MailApp quota 與 `submitted` 都不是實際收件證明。

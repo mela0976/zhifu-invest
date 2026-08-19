@@ -2,12 +2,16 @@ import { api, appUrl, request } from './api.js';
 import { emptyState, errorState, escapeHtml, formatDate, formatMoney, initShell, openDialog, closeDialog, qualificationExpiryIso, resolveAdminDashboardRoute, setButtonBusy, sourceNotice, toast } from './common.js';
 import { statusLabels } from './demo-data.js';
 
-let dashboard = { kpis: {}, members: [], subscriptions: [], bookings: [], referrers: [], commissions: [], actions: [] };
+let dashboard = { kpis: {}, members: [], leads: [], subscriptions: [], bookings: [], referrers: [], commissions: [], content: [], matches: [], actions: [] };
 let projects = [];
 let selectedSubscription = null;
 let selectedMember = null;
 let selectedReferrer = null;
 let selectedCommission = null;
+let selectedLead = null;
+let selectedContent = null;
+let leadImportRows = [];
+let newsletterPreview = null;
 let activeView = 'overview';
 
 const statusLabel = (value) => statusLabels[value] || value || '待確認';
@@ -20,9 +24,13 @@ const memberDialog = document.querySelector('#member-dialog');
 const subscriptionDialog = document.querySelector('#subscription-admin-dialog');
 const referrerDialog = document.querySelector('#referrer-dialog');
 const commissionDialog = document.querySelector('#commission-dialog');
+const leadDialog = document.querySelector('#lead-dialog');
+const leadImportDialog = document.querySelector('#lead-import-dialog');
+const contentDialog = document.querySelector('#content-dialog');
+const normalizeList = (value, key) => Array.isArray(value) ? value : value?.[key] || value?.items || [];
 
 function showView(view, updateHash = true) {
-  const next = ['overview', 'members', 'subscriptions', 'referrals', 'bookings', 'projects', 'content', 'notifications', 'audit'].includes(view) ? view : 'overview';
+  const next = ['overview', 'members', 'leads', 'subscriptions', 'referrals', 'bookings', 'projects', 'content', 'notifications', 'audit'].includes(view) ? view : 'overview';
   activeView = next;
   document.querySelectorAll('[data-admin-view]').forEach((section) => { section.hidden = section.dataset.adminView !== next; });
   document.querySelectorAll('[data-admin-nav]').forEach((link) => {
@@ -101,6 +109,66 @@ function renderMembers() {
     return (!query || haystack.includes(query)) && (filter === 'all' || memberState(item) === filter);
   });
   document.querySelector('#member-table').innerHTML = items.length ? memberRows(items) : emptyState('找不到會員', '調整搜尋字詞或狀態篩選。');
+}
+
+const leadStatusLabel = (value) => ({
+  new: '新名單', contacted: '已聯繫', qualified: '已確認意向', converted: '已轉會員', archived: '不再追蹤',
+}[value] || statusLabel(value));
+
+function leadRows(items) {
+  const contact = (item) => item.contact || item.maskedContact || item.email || item.phone || '—';
+  const ownerName = (item) => item.ownerName || dashboard.referrers.find((referrer) => referrer.id === (item.ownerReferrerId || item.owner))?.displayName || item.ownerReferrerId || item.owner || '待核對';
+  const evidence = (item) => item.privacyEvidence?.reference || item.sourceEvidence || '—';
+  const importer = (item) => item.importedBy || item.createdBy || item.createdActor || '營運管理員（見稽核事件）';
+  const memberId = (item) => item.memberId || item.linkedMemberId || item.linkMemberId || '';
+  const rows = items.map((item) => `<tr data-testid="lead-row" data-lead-id="${escapeHtml(item.id)}"><td class="data-table__primary"><strong>${escapeHtml(item.displayName || item.name)}</strong><small>${escapeHtml(item.id)}</small></td><td>${escapeHtml(contact(item))}</td><td><strong>${escapeHtml(item.channel || '—')}</strong><small class="table-note mono">${escapeHtml(item.sourceReference || item.source || '—')}</small></td><td><span class="immutable-chip">來源鎖定</span><strong class="mono">${escapeHtml(evidence(item))}</strong><small class="table-note">導入者：${escapeHtml(importer(item))} · ${formatDate(item.importedAt || item.createdAt)}</small></td><td><span class="status" data-status="${escapeHtml(item.status || 'new')}">${escapeHtml(leadStatusLabel(item.status || 'new'))}</span></td><td>${escapeHtml(ownerName(item))}</td><td>${memberId(item) ? `<strong>${escapeHtml(item.linkedMemberName || item.memberName || memberId(item))}</strong><small class="table-note mono">${escapeHtml(memberId(item))}</small>` : '<span class="micro">尚未連結</span>'}</td><td><button class="button button--secondary button--small" type="button" data-lead-manage="${escapeHtml(item.id)}">管理</button></td></tr>`).join('');
+  const mobile = items.map((item) => `<article class="mobile-record lead-record" data-testid="lead-row" data-lead-id="${escapeHtml(item.id)}"><div class="mobile-record__top"><div><strong>${escapeHtml(item.displayName || item.name)}</strong><div class="mono micro">${escapeHtml(item.id)}</div></div><span class="status" data-status="${escapeHtml(item.status || 'new')}">${escapeHtml(leadStatusLabel(item.status || 'new'))}</span></div><p class="micro">${escapeHtml(item.channel || '—')}｜${escapeHtml(item.sourceReference || item.source || '—')}</p><div class="immutable-evidence"><span>不可變來源證據</span><strong class="mono">${escapeHtml(evidence(item))}</strong><small>導入者：${escapeHtml(importer(item))}</small></div><div class="mobile-record__meta"><div><span>負責引薦方</span><strong>${escapeHtml(ownerName(item))}</strong></div><div><span>會員連結</span><strong>${escapeHtml(item.linkedMemberName || item.memberName || memberId(item) || '尚未連結')}</strong></div></div><button class="button button--secondary button--small button--wide" type="button" data-lead-manage="${escapeHtml(item.id)}">管理潛客</button></article>`).join('');
+  return `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>潛客</th><th>聯絡</th><th>來源</th><th>來源證據／導入者</th><th>狀態</th><th>負責人</th><th>會員連結</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div><div class="mobile-records">${mobile}</div>`;
+}
+
+function renderLeads() {
+  const search = document.querySelector('#lead-search');
+  const filterControl = document.querySelector('#lead-filter');
+  if (!search || !filterControl) return;
+  const query = search.value.trim().toLowerCase();
+  const filter = filterControl.value;
+  const items = dashboard.leads.filter((item) => {
+    const haystack = `${item.displayName || item.name} ${item.contact || item.email || item.phone} ${item.channel} ${item.sourceReference || item.source} ${item.privacyEvidence?.reference || item.sourceEvidence} ${item.ownerReferrerId || item.owner} ${item.memberId || item.linkedMemberId}`.toLowerCase();
+    return (!query || haystack.includes(query)) && (filter === 'all' || (item.status || 'new') === filter);
+  });
+  const counts = {
+    total: dashboard.leads.length,
+    new: dashboard.leads.filter((item) => (item.status || 'new') === 'new').length,
+    active: dashboard.leads.filter((item) => ['contacted', 'qualified'].includes(item.status)).length,
+    converted: dashboard.leads.filter((item) => item.linkedMemberId || item.status === 'converted').length,
+  };
+  document.querySelector('#lead-kpis').innerHTML = [
+    ['名單總數', counts.total, 'TOTAL'], ['待首次聯繫', counts.new, 'NEW'], ['追蹤中', counts.active, 'ACTIVE'], ['已連結會員', counts.converted, 'LINKED'],
+  ].map(([label, value, code]) => `<article><span>${escapeHtml(label)}</span><strong>${Number(value).toLocaleString('zh-TW')}</strong><small>${code}</small></article>`).join('');
+  document.querySelector('#lead-table').innerHTML = items.length ? leadRows(items) : emptyState('找不到潛客', '調整搜尋字詞或狀態篩選；來源證據不會因篩選而變更。');
+}
+
+const contentTypeLabel = (value) => ({ video: '投資影音', article: '研究文章', project_update: '專案更新' }[value] || value || '內容');
+
+function renderContent() {
+  const filter = document.querySelector('#content-filter')?.value || 'all';
+  const items = dashboard.content.filter((item) => filter === 'all' || item.status === filter);
+  const cards = items.map((item) => `<article class="content-register-card" data-testid="content-row" data-content-id="${escapeHtml(item.id)}"><div class="content-register-card__top"><span class="content-type">${escapeHtml(contentTypeLabel(item.type))}</span><span class="status" data-status="${escapeHtml(item.status || 'draft')}">${escapeHtml(statusLabel(item.status || 'draft'))}</span></div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary || '尚未填寫摘要')}</p><dl><div><dt>專案</dt><dd>${escapeHtml(item.projectName || item.projectId || '一般內容')}</dd></div><div><dt>公開首頁</dt><dd>${item.status === 'published' && item.publicSafe ? '可顯示' : '不顯示'}</dd></div></dl><p class="risk-copy">${escapeHtml(item.riskNotice || item.riskDisclosure || '風險提示待補')}</p><button class="button button--secondary button--small button--wide" type="button" data-content-edit="${escapeHtml(item.id)}">編輯內容</button></article>`).join('');
+  document.querySelector('#content-table').innerHTML = items.length ? `<div class="content-register-grid">${cards}</div>` : emptyState('目前沒有內容', '建立影音、文章或專案更新草稿。');
+}
+
+function renderNewsletterPreview() {
+  const target = document.querySelector('#newsletter-preview');
+  if (!target) return;
+  if (!newsletterPreview) {
+    target.innerHTML = emptyState('尚無摘要預覽', '重新整理後會依已發布內容與媒合結果產生預覽。');
+    return;
+  }
+  const previews = Array.isArray(newsletterPreview) ? newsletterPreview : normalizeList(newsletterPreview.previews || newsletterPreview.generated, 'previews');
+  const digest = previews[0] || newsletterPreview;
+  const content = normalizeList(digest.content || digest.contentItems || digest.newContent, 'content');
+  const matches = normalizeList(digest.matches || digest.matchedProjects || digest.projectMatches || digest.recommendations, 'matches');
+  target.innerHTML = `<div class="digest-preview" data-testid="newsletter-preview"><span class="mono micro">${escapeHtml(digest.date || new Date().toISOString().slice(0, 10))}</span><h3>${escapeHtml(digest.headline || digest.title || '今日投資摘要')}</h3><p>${previews.length ? `${previews.length} 位會員預覽 · ` : ''}${content.length} 則新內容 · ${matches.length} 個推薦專案</p><ol>${content.slice(0, 3).map((item) => `<li>${escapeHtml(item.title)}</li>`).join('')}</ol><div class="notice"><strong>產生不等於傳送</strong><br>外部傳送仍須符合會員每日摘要同意與可用通知管道。</div></div>`;
 }
 
 function renderSubscriptions() {
@@ -247,7 +315,7 @@ function renderProjects() {
   }).join('') : '<p class="micro">尚無進度資料。</p>';
 }
 
-function renderAll() { renderKpis(); renderActions(); renderMembers(); renderSubscriptions(); renderReferrals(); renderBookings(); renderProjects(); }
+function renderAll() { renderKpis(); renderActions(); renderMembers(); renderLeads(); renderSubscriptions(); renderReferrals(); renderBookings(); renderProjects(); renderContent(); renderNewsletterPreview(); }
 
 function openMember(id) {
   selectedMember = dashboard.members.find((item) => String(item.id) === String(id));
@@ -268,6 +336,98 @@ function openMember(id) {
   document.querySelector('#referral-evidence-reference').value = attribution.evidenceReference || attribution.reference || '';
   document.querySelector('#member-reason').value = '';
   openDialog(memberDialog);
+}
+
+function openLead(id = '') {
+  selectedLead = id ? dashboard.leads.find((item) => String(item.id) === String(id)) : null;
+  document.querySelector('#lead-dialog-title').textContent = selectedLead ? '管理潛在投資人' : '新增潛在投資人';
+  document.querySelector('#lead-id').value = selectedLead?.id || '';
+  document.querySelector('#lead-name').value = selectedLead?.displayName || selectedLead?.name || '';
+  document.querySelector('#lead-contact').value = selectedLead?.contact || selectedLead?.email || selectedLead?.phone || '';
+  document.querySelector('#lead-channel').value = selectedLead?.channel || '';
+  const source = document.querySelector('#lead-source');
+  source.value = selectedLead?.sourceReference || selectedLead?.source || '';
+  source.readOnly = Boolean(selectedLead);
+  source.setAttribute('aria-readonly', String(Boolean(selectedLead)));
+  const evidence = document.querySelector('#lead-source-evidence');
+  evidence.value = selectedLead?.privacyEvidence?.reference || selectedLead?.sourceEvidence || '';
+  evidence.readOnly = Boolean(selectedLead);
+  evidence.setAttribute('aria-readonly', String(Boolean(selectedLead)));
+  document.querySelector('#lead-status').value = selectedLead?.status || 'new';
+  const owner = document.querySelector('#lead-owner');
+  owner.innerHTML = `<option value="">請選擇</option>${dashboard.referrers.filter((item) => item.status !== 'disabled' || item.id === selectedLead?.ownerReferrerId).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.displayName || item.name)}｜${escapeHtml(item.code || item.id)}</option>`).join('')}`;
+  owner.value = selectedLead?.ownerReferrerId || selectedLead?.owner || '';
+  owner.disabled = Boolean(selectedLead);
+  document.querySelector('#lead-member').innerHTML = `<option value="">尚未連結</option>${dashboard.members.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.displayName)}｜${escapeHtml(item.id)}</option>`).join('')}`;
+  document.querySelector('#lead-member').value = selectedLead?.memberId || selectedLead?.linkedMemberId || selectedLead?.linkMemberId || '';
+  document.querySelector('#lead-reason').value = '';
+  const metadata = document.querySelector('#lead-import-metadata');
+  metadata.hidden = !selectedLead;
+  document.querySelector('#lead-imported-by').textContent = selectedLead?.importedBy || selectedLead?.createdBy || selectedLead?.createdActor || '營運管理員（見稽核事件）';
+  document.querySelector('#lead-imported-at').textContent = selectedLead ? `導入時間 ${formatDate(selectedLead.importedAt || selectedLead.createdAt)}` : '建立時由伺服器寫入';
+  openDialog(leadDialog);
+}
+
+function csvFields(line) {
+  const values = [];
+  let value = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && quoted && line[index + 1] === '"') { value += '"'; index += 1; }
+    else if (character === '"') quoted = !quoted;
+    else if (character === ',' && !quoted) { values.push(value.trim()); value = ''; }
+    else value += character;
+  }
+  values.push(value.trim());
+  return values;
+}
+
+function parseLeadCsv(value) {
+  const lines = String(value || '').replace(/^\uFEFF/, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const first = csvFields(lines[0]);
+  const hasHeader = /姓名|name/i.test(first[0] || '') && /聯絡|contact/i.test(first[1] || '');
+  return lines.slice(hasHeader ? 1 : 0).map(csvFields).filter((fields) => fields.some(Boolean)).map((fields) => {
+    const contact = fields[1] || '';
+    return {
+      displayName: fields[0] || '', contact, ...(contact.includes('@') ? { email: contact } : { phone: contact }),
+      channel: fields[2] || '其他', sourceReference: fields[3] || '',
+    };
+  }).filter((item) => item.displayName && item.contact && item.sourceReference);
+}
+
+function renderLeadImportPreview() {
+  const target = document.querySelector('#lead-import-preview');
+  const button = document.querySelector('#lead-import-submit');
+  button.disabled = leadImportRows.length === 0;
+  button.textContent = `匯入 ${leadImportRows.length} 筆`;
+  target.innerHTML = leadImportRows.length ? `<div class="import-preview__head"><strong>準備匯入 ${leadImportRows.length} 筆</strong><span>只顯示前 5 筆</span></div><ol>${leadImportRows.slice(0, 5).map((item) => `<li><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.contact)}｜${escapeHtml(item.channel)}｜${escapeHtml(item.sourceReference)}</span></li>`).join('')}</ol>` : '<p class="micro">沒有可匯入的完整資料；每列至少需要姓名、聯絡方式與唯一來源參考編號。</p>';
+}
+
+function openLeadImport() {
+  document.querySelector('#lead-import-form').reset();
+  document.querySelector('#lead-import-owner').innerHTML = `<option value="">請選擇</option>${dashboard.referrers.filter((item) => item.status !== 'disabled').map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.displayName || item.name)}｜${escapeHtml(item.code || item.id)}</option>`).join('')}`;
+  leadImportRows = [];
+  renderLeadImportPreview();
+  openDialog(leadImportDialog);
+}
+
+function openContent(id = '') {
+  selectedContent = id ? dashboard.content.find((item) => String(item.id) === String(id)) : null;
+  document.querySelector('#content-dialog-title').textContent = selectedContent ? '編輯內容' : '新增內容';
+  document.querySelector('#content-id').value = selectedContent?.id || '';
+  document.querySelector('#content-type').value = selectedContent?.type || 'video';
+  document.querySelector('#content-status').value = selectedContent?.status || 'draft';
+  document.querySelector('#content-title-input').value = selectedContent?.title || '';
+  document.querySelector('#content-url').value = selectedContent?.videoUrl || selectedContent?.url || '';
+  document.querySelector('#content-project').innerHTML = `<option value="">一般內容</option>${projects.map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.displayName || project.name)}｜${escapeHtml(project.id)}</option>`).join('')}`;
+  document.querySelector('#content-project').value = selectedContent?.projectId || '';
+  document.querySelector('#content-summary').value = selectedContent?.summary || '';
+  document.querySelector('#content-risk').value = selectedContent?.riskNotice || selectedContent?.riskDisclosure || '';
+  document.querySelector('#content-public-safe').checked = Boolean(selectedContent?.publicSafe);
+  document.querySelector('#content-reason').value = '';
+  openDialog(contentDialog);
 }
 
 function openSubscription(id) {
@@ -333,15 +493,21 @@ function openCommission(subscriptionId) {
 
 async function loadDashboard() {
   try {
-    const [result, projectResult, bookingResult] = await Promise.all([api.adminDashboard(), api.projects(), api.bookings().catch(() => [])]);
+    const [result, projectResult, bookingResult, leadResult, contentResult, matchResult, newsletterResult] = await Promise.all([
+      api.adminDashboard(), api.projects(), api.bookings().catch(() => []), api.adminLeads(), api.adminContent(), api.adminMatches(), api.newsletterPreview(),
+    ]);
     dashboard = { ...dashboard, ...(result.data || {}) };
     dashboard.members = Array.isArray(dashboard.members) ? dashboard.members : [];
     dashboard.subscriptions = Array.isArray(dashboard.subscriptions) ? dashboard.subscriptions : [];
     dashboard.referrers = Array.isArray(dashboard.referrers) ? dashboard.referrers : [];
     dashboard.commissions = Array.isArray(dashboard.commissions) ? dashboard.commissions : [];
     dashboard.bookings = Array.isArray(bookingResult) ? bookingResult : bookingResult?.bookings || bookingResult?.items || [];
+    dashboard.leads = normalizeList(leadResult.data || leadResult, 'leads');
+    dashboard.content = normalizeList(contentResult.data || contentResult, 'content');
+    dashboard.matches = normalizeList(matchResult.data || matchResult, 'matches');
     dashboard.actions = Array.isArray(dashboard.actions) ? dashboard.actions : [];
     projects = Array.isArray(projectResult.data) ? projectResult.data : projectResult.data?.projects || [];
+    newsletterPreview = newsletterResult.data || newsletterResult || null;
     sourceNotice(result.source, document.querySelector('#admin-source'));
     renderAll();
   } catch (error) {
@@ -376,6 +542,10 @@ document.addEventListener('click', async (event) => {
   if (nav) { event.preventDefault(); showView(nav.dataset.adminNav || nav.dataset.adminGo); }
   const memberButton = event.target.closest('[data-member-manage]');
   if (memberButton) openMember(memberButton.dataset.memberManage);
+  const leadButton = event.target.closest('[data-lead-manage]');
+  if (leadButton) openLead(leadButton.dataset.leadManage);
+  const contentButton = event.target.closest('[data-content-edit]');
+  if (contentButton) openContent(contentButton.dataset.contentEdit);
   const subscriptionButton = event.target.closest('[data-subscription-manage]');
   if (subscriptionButton) openSubscription(subscriptionButton.dataset.subscriptionManage);
   const referrerEdit = event.target.closest('[data-referrer-edit]');
@@ -389,6 +559,110 @@ document.addEventListener('click', async (event) => {
     setButtonBusy(notification, true, '傳送中…');
     try { await request(`/api/admin/notifications/${encodeURIComponent(notification.dataset.notificationSend)}/send`, { method: 'POST' }); toast('LINE 通知已送入傳送佇列。'); loadNotifications(); } catch (error) { toast(`通知未送出：${error.message}`, 'error'); setButtonBusy(notification, false); }
   }
+});
+
+document.querySelector('#lead-create').addEventListener('click', () => openLead());
+document.querySelector('#lead-import-open').addEventListener('click', openLeadImport);
+document.querySelector('#content-create').addEventListener('click', () => openContent());
+
+document.querySelector('#lead-csv-text').addEventListener('input', (event) => {
+  leadImportRows = parseLeadCsv(event.currentTarget.value);
+  renderLeadImportPreview();
+});
+
+document.querySelector('#lead-csv-file').addEventListener('change', async (event) => {
+  const [file] = event.currentTarget.files || [];
+  if (!file) return;
+  try {
+    const csv = await file.text();
+    document.querySelector('#lead-csv-text').value = csv;
+    leadImportRows = parseLeadCsv(csv);
+    renderLeadImportPreview();
+  } catch (error) { toast(`CSV 無法讀取：${error.message}`, 'error'); }
+});
+
+document.querySelector('#lead-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  setButtonBusy(button, true, '正在儲存…');
+  try {
+    const fields = Object.fromEntries(new FormData(form));
+    const projectMember = dashboard.members.find((item) => item.id === fields.linkMemberId);
+    const payload = {
+      displayName: String(fields.displayName || '').trim(),
+      contact: String(fields.contact || '').trim(),
+      channel: String(fields.channel || '').trim(),
+      status: fields.status,
+      linkMemberId: fields.linkMemberId || null,
+      reason: String(fields.reason || '').trim(),
+    };
+    if (payload.contact.includes('@')) payload.email = payload.contact;
+    else payload.phone = payload.contact;
+    if (!fields.leadId) {
+      payload.ownerReferrerId = String(fields.ownerReferrerId || '').trim();
+      payload.sourceReference = String(fields.sourceReference || '').trim();
+      payload.sourceEvidence = String(fields.sourceEvidence || '').trim();
+    }
+    if (!payload.reason) throw new Error('請填寫操作理由。');
+    if (!fields.leadId && (!payload.ownerReferrerId || !payload.sourceReference || !payload.sourceEvidence)) throw new Error('新增潛客必須填寫負責引薦方、唯一來源參考與證據。');
+    const result = fields.leadId ? await api.updateLead(fields.leadId, payload) : await api.createLead(payload);
+    const saved = result?.lead || result;
+    const normalized = { ...selectedLead, ...saved, linkedMemberName: saved.linkedMemberName || saved.memberName || projectMember?.name || projectMember?.displayName };
+    dashboard.leads = fields.leadId ? dashboard.leads.map((item) => item.id === fields.leadId ? normalized : item) : [normalized, ...dashboard.leads];
+    renderLeads(); closeDialog(leadDialog);
+    toast(fields.leadId ? '潛客資料已更新；原始導入者與來源證據維持不變。' : '潛客已建立並鎖定來源證據。');
+  } catch (error) { toast(`潛客未儲存：${error.message}`, 'error'); }
+  finally { setButtonBusy(button, false); }
+});
+
+document.querySelector('#lead-import-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  setButtonBusy(button, true, '正在匯入…');
+  try {
+    const fields = Object.fromEntries(new FormData(form));
+    if (!leadImportRows.length) throw new Error('沒有可匯入的完整資料。');
+    const payload = { rows: leadImportRows.map((item) => ({ ...item, ownerReferrerId: fields.ownerReferrerId })), sourceEvidence: String(fields.sourceEvidence || '').trim(), reason: String(fields.reason || '').trim() };
+    if (!fields.ownerReferrerId || !payload.sourceEvidence || !payload.reason) throw new Error('請選擇負責引薦方，並填寫本批來源證據與匯入理由。');
+    const result = await api.importLeads(payload);
+    const imported = normalizeList(result?.leads || result?.imported || result, 'leads');
+    dashboard.leads = imported.length ? [...imported, ...dashboard.leads] : dashboard.leads;
+    renderLeads(); closeDialog(leadImportDialog);
+    toast(`已匯入 ${Number(result?.count ?? imported.length ?? leadImportRows.length)} 筆潛客；導入者與來源證據已鎖定。`);
+  } catch (error) { toast(`CSV 未匯入：${error.message}`, 'error'); }
+  finally { setButtonBusy(button, false); }
+});
+
+document.querySelector('#content-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  setButtonBusy(button, true, '正在儲存…');
+  try {
+    const fields = Object.fromEntries(new FormData(form));
+    const project = projects.find((item) => item.id === fields.projectId);
+    const payload = {
+      type: fields.type,
+      title: String(fields.title || '').trim(),
+      url: String(fields.url || '').trim(),
+      projectId: fields.projectId || null,
+      summary: String(fields.summary || '').trim(),
+      riskNotice: String(fields.riskNotice || '').trim(),
+      status: fields.status,
+      publicSafe: fields.publicSafe === 'true',
+      reason: String(fields.reason || '').trim(),
+    };
+    if (!payload.url.startsWith('https://')) throw new Error('內容網址必須使用 HTTPS。');
+    if (payload.status === 'published' && !payload.riskNotice) throw new Error('發布前必須填寫風險提示。');
+    const result = fields.contentId ? await api.updateContent(fields.contentId, payload) : await api.createContent(payload);
+    const saved = { ...selectedContent, ...(result?.content || result), projectName: (result?.content || result)?.projectName || project?.displayName || project?.name || '' };
+    dashboard.content = fields.contentId ? dashboard.content.map((item) => item.id === fields.contentId ? saved : item) : [saved, ...dashboard.content];
+    renderContent(); closeDialog(contentDialog);
+    toast(payload.status === 'published' ? '內容已發布；公開首頁仍只顯示通過公開安全檢核的項目。' : '內容草稿已儲存。');
+  } catch (error) { toast(`內容未儲存：${error.message}`, 'error'); }
+  finally { setButtonBusy(button, false); }
 });
 
 document.querySelector('#member-form').addEventListener('submit', async (event) => {
@@ -544,8 +818,29 @@ document.querySelector('#subscription-admin-form').addEventListener('submit', as
 });
 
 ['member-search', 'member-filter'].forEach((id) => document.querySelector(`#${id}`).addEventListener('input', renderMembers));
+['lead-search', 'lead-filter'].forEach((id) => document.querySelector(`#${id}`).addEventListener('input', renderLeads));
 ['subscription-search', 'subscription-filter'].forEach((id) => document.querySelector(`#${id}`).addEventListener('input', renderSubscriptions));
 document.querySelector('#commission-filter').addEventListener('input', () => renderCommissionRows(commissionRecords()));
+document.querySelector('#content-filter').addEventListener('input', renderContent);
+document.querySelector('#newsletter-refresh').addEventListener('click', async (event) => {
+  setButtonBusy(event.currentTarget, true, '讀取中…');
+  try {
+    const result = await api.newsletterPreview();
+    newsletterPreview = result.data || result;
+    renderNewsletterPreview();
+  } catch (error) { toast(`摘要預覽無法讀取：${error.message}`, 'error'); }
+  finally { setButtonBusy(event.currentTarget, false); }
+});
+document.querySelector('#newsletter-generate').addEventListener('click', async (event) => {
+  setButtonBusy(event.currentTarget, true, '產生中…');
+  try {
+    const result = await api.generateNewsletter({ date: new Date().toISOString().slice(0, 10), send: false, reason: '營運人工確認產生每日摘要，不啟動外部傳送' });
+    newsletterPreview = result?.preview || result?.newsletter || result?.generated || result;
+    renderNewsletterPreview();
+    toast('今日摘要已產生；產生不等於外部傳送，仍依會員同意與管道可用性決定。');
+  } catch (error) { toast(`摘要未產生：${error.message}`, 'error'); }
+  finally { setButtonBusy(event.currentTarget, false); }
+});
 document.querySelector('#notification-refresh').addEventListener('click', loadNotifications);
 document.querySelector('#audit-refresh').addEventListener('click', loadAudits);
 window.addEventListener('hashchange', () => showView(location.hash.slice(1), false));

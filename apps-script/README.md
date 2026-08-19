@@ -9,7 +9,8 @@ Sheets 直接公開給瀏覽器。
 1. 建立一個新的 Apps Script 專案，將本目錄除 `tests/` 外的檔案上傳。
 2. 執行 `setupWorkbook()`；它會建立或連結試算表、寫入 `SPREADSHEET_ID`，並建立：
    `Members`、`Projects`、`Subscriptions`、`Referrers`、`Bookings`、`Activations`、
-   `Notifications`、`Audits`、`GatewayNonces`。
+   `Notifications`、`Audits`、`GatewayNonces`、`Prospects`、`ContentItems`、
+   `NewsletterPreferences`、`DailyDigests`。
 3. 只有測試環境才手動執行 `seedDemoData()`。它不會自動執行，且只接受空白資料表；
    產生 6 個專案、30 位會員、25 筆認購，人物、公司與文字均標示 `DEMO`。
 4. 在 Apps Script「專案設定 → 指令碼屬性」加入下列屬性，不要寫入 Git：
@@ -64,11 +65,21 @@ https://developers.google.com/apps-script/manifest/web-app-api-executable
 再加 15 分鐘退避，亦即首次投遞後最多重試三次；第四次失敗成為 `failed` 待辦。訊息模板
 從不包含金額。
 
+另外執行一次 `installDailyDigestTrigger()`。它會把 `runDailyDigestSchedule` reconcile 成唯一一個
+每日 trigger；Apps Script 的觸發分鐘可能浮動，因此函式在執行當下以 `Asia/Taipei` 重新計算日期，
+並以 `memberId:YYYY-MM-DD` 作冪等鍵。Cloudflare 的 5 分鐘 Cron 也會呼叫同一個冪等 operation，
+兩條排程不會建立兩份站內摘要或重複排入 LINE／Email。`productionPreflight()` 會回報兩種 trigger
+數量與 `MailApp.getRemainingDailyQuota()` 快照，但 quota 快照不是寄達證明。
+
 所有 Sheets mutation 都在同一 ScriptLock 內執行，並在 release lock 前呼叫
 `SpreadsheetApp.flush()`。若已存在舊版 Sheet，新增欄位不會被靜默改寫；`setupWorkbook()` 會以
 `schema_mismatch` 拒絕。先備份，再由 allowlist 管理員手動執行一次
 `migrateReferralCommissionSchema()`；它只接受舊版表頭的精確前綴、append 新欄並建立
 `Referrers`，遇到其他差異即 fail closed。
+
+導入名單與每日摘要上線前請先依 [GROWTH-MIGRATION.md](./GROWTH-MIGRATION.md) 備份並執行
+`migrateGrowthSchema()`。此 migration 只在 `Members`／`Subscriptions` 尾端 append JSON snapshot
+欄位並建立四張新表，不重排、不刪除、也不改寫既有資料列。
 
 ## 3. Worker → Apps Script 固定信封
 
@@ -136,8 +147,8 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 | `projects.list` | proxy payload → `{projects}`；未逐案授權時只有 public view |
 | `projects.get` | `params.projectId` → `{project}`；同樣做逐案欄位遮罩 |
 | `activation.create` | `body:{fullName,phone,sourceCode,sourceName,lineFriendConfirmed,privacyConsent}` → `{activation}`；memberId 與 LINE userId 一律取可信 session context，並以伺服器保存的 `member.lineFriendshipState=friend` 為準，checkbox 不能當好友證據 |
-| `bookings.list` | member/admin → `{bookings}`，會員只見自己的資料 |
-| `bookings.create` | `body:{displayName,phone,email,advisorType,topic,preferredTime,note}` → `{booking}` |
+| `bookings.list` / `listBookings` | member/admin → `{bookings}`，會員只見自己的資料 |
+| `bookings.create` | 公開表單 `body:{role,name,topic,phone,preferredDate,preferredTime,note,consent}` 由 Worker 轉為 canonical booking，保存 `identityType/displayName/consentAt`與預約日期時段 → `{booking}` |
 | `subscriptions.list` | member/admin → `{subscriptions}`，會員只見自己的資料 |
 | `subscriptions.create` | `body:{projectId,requestedAmountTwd,riskAcknowledged:true}` + `idempotencyKey` → `{subscription,replayed}`；檢查 active、qualification approved、逐案權限與 minimum/increment，並保存風險版本與確認時間 |
 | `deck.authorize` | `{projectId,actor}` → `{allowed,objectKey,filename,contentType,expiresAt}`；R2 key 來自 `project.deck.objectKey`，缺省為 `decks/{projectId}/{deckId}.pdf` |
@@ -155,6 +166,12 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 | `admin.notifications.create` | `body:{memberIds,announcementId}`；建立 bulk `pending_manual` |
 | `admin.notifications.send` | `params.notificationId`, `body.reason`；人工核准後進 `queued` |
 | `admin.exports.members`, `admin.exports.subscriptions`, `adminExport(resource=referrers|commissions)` | → `{filename,mimeType,csv}`；每次匯出都 append audit |
+| `adminListProspects`, `adminCreateProspect`, `adminImportProspects`, `adminPatchProspect` | 名單查詢／單筆建立／最多 500 列匯入／狀態與會員連結；通用 contact 會安全辨識 email/phone，explicit email/phone 同時保留；跨 owner 重複為 conflict，batch 以單次 Sheets range write 提交 |
+| `adminListContent`, `adminCreateContent`, `adminPatchContent` | 投資影音與資訊管理；公開內容必須 `published + publicSafe`，網址只接受 HTTPS |
+| `adminListMatches`, `listMatches` | 依會員明示產業、票額區間、有效資格與逐案權限產生可解釋且 deterministic 的媒合 |
+| `getNewsletterPreferences`, `patchNewsletterPreferences` | 回傳 `preference + emailAvailable/lineAvailable`（不回傳聯絡身份）；`in_app` 永遠存在，LINE／Email 各需 `dailyDigestConsent` + channel-specific consent + 可投遞身份 |
+| `getDailyDigest`, `adminDigestPreview`, `adminDigestGenerate` | 站內摘要、管理預覽與冪等產生；站內保留本人五個金額 ledger，外送只有一般提示與登入連結 |
+| `listPublicContent` | 僅回傳 `published + publicSafe + public` 內容，供公開 Pages 首頁使用 |
 
 為 HtmlService 與向下相容，也支援 camelCase：`upsertLineMember`、`getMember`、`listProjects`、
 `getProject`、`listSubscriptions`、`createBooking`、`createActivation`、
@@ -177,6 +194,18 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
   expiresAt；approvedAt 必須可解析、不得明顯晚於伺服器時間，且 expiresAt 必須晚於 approvedAt。
 - protected project 只有 active + qualification approved + member projectAccess 或 project
   memberAllowlist 且資格未過期才返回；visitor/member 無權時不回傳 company、amount、reports、deck。
+- `Prospects` 分開保存來源參考與隱私同意證據（reference／consentedAt／noticeVersion）；
+  `importedBy/importedAt` 不可由瀏覽器冒充。狀態固定為 `new/contacted/qualified/converted/archived`。
+- `Boolean(linkedMemberId) === (status === 'converted')`；連結前完成所有歸屬驗證，不會在失敗後留下孤立名單。
+- 專案媒合只納入 `published`、`publishedAt <= now`、未撤回／關閉，且具有有效台北日期 deadline 的專案。
+- 每日摘要站內進度固定為 requested、approved、depositPaid、accountRecorded、allocated 五個 TWD 狀態。
+- 所有 CSV 匯出會中和空白或 tab 後以 `= + - @` 開頭的公式型儲存格。
+- 導入歸屬與分潤是兩條資料線：每筆認購保存無 PII 的 `acquisitionAttributionSnapshot`
+  供永久業績歸屬；只有當下有效的合作協議才另建 `referralSnapshot` 計算分潤。
+- 每日摘要永遠可在登入後站內查看；`dailyDigestConsent` 只控制主動 LINE／Email。
+  MailApp 配額不足會標記 `deferred_quota`，下次安全續送；已 `submitted` 或 LINE 已 `queued` 不重複。
+- MailApp/LINE provider 接受請求不代表真人已閱讀或實際收件。正式上線須用受控測試會員完成 LINE
+  裝置與真實 email inbox 驗收，並記錄日期、channel、digest id；不得把 preflight quota 或 queue state 當成寄達證明。
 - 啟用申請保存 sourceCode、sourceName、consentedAt 與當時伺服器已驗證的 LINE friendship evidence；
   後台會一併顯示，讓引薦人確認來源與同意證據。
 - `sourceCode` 只有在對應 `active` 且生效中的 Referrer 時，才建立單一

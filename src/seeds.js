@@ -101,6 +101,7 @@ function member(index, referrers) {
       verifiedAt: referralState === 'verified' ? isoOffset(30 - index) : null,
       verifiedBy: referralState === 'verified' ? 'admin-referrer-demo' : null,
     },
+    leadOwnerAttribution: null,
     membershipState,
     qualificationState,
     qualificationApproval: qualificationState === 'approved' ? {
@@ -110,9 +111,89 @@ function member(index, referrers) {
       expiresAt: '2027-08-18T00:00:00.000Z',
     } : null,
     tier: ['free', 'professional', 'special'][index % 3],
+    investmentPreferences: {
+      industries: [INDUSTRIES[index % INDUSTRIES.length], INDUSTRIES[(index + 2) % INDUSTRIES.length]],
+      ticketMinTwd: 500_000,
+      ticketMaxTwd: 1_500_000 + (index % 4) * 500_000,
+    },
     projectAccess: Array.from({ length: 3 }, (_, p) => `project-${String(((index + p) % 6) + 1).padStart(2, '0')}`),
     createdAt: isoOffset(30 - index),
     updatedAt: isoOffset(2),
+  };
+}
+
+function leads(members, referrers) {
+  return Array.from({ length: 10 }, (_, index) => {
+    const n = index + 1;
+    const member = index < 6 ? members[index + 6] : null;
+    const owner = member
+      ? referrers.find((item) => item.id === member.referralAttribution?.referrerId)
+      : referrers[index % referrers.length];
+    const id = `lead-${String(n).padStart(3, '0')}`;
+    const createdAt = isoOffset(15 - index);
+    if (member) {
+      member.leadOwnerAttribution = {
+        leadId: id,
+        referrerId: owner.id,
+        referralCode: owner.code,
+        sourceReference: `DEMO-LEAD-SOURCE-${String(n).padStart(3, '0')}`,
+        evidenceReference: `DEMO-PRIVACY-${String(n).padStart(3, '0')}`,
+        linkedAt: createdAt,
+        linkedBy: 'admin-referrer-demo',
+      };
+    }
+    return {
+      id,
+      demo: true,
+      ownerReferrerId: owner.id,
+      sourceReference: `DEMO-LEAD-SOURCE-${String(n).padStart(3, '0')}`,
+      privacyEvidence: {
+        reference: `DEMO-PRIVACY-${String(n).padStart(3, '0')}`,
+        consentedAt: createdAt,
+        noticeVersion: 'demo-privacy-0.1',
+      },
+      displayName: `DEMO 潛在會員 ${String(n).padStart(2, '0')}`,
+      phone: `09${String(20000000 + n).padStart(8, '0')}`,
+      email: `lead${n}@example.invalid`,
+      companyName: n % 2 === 0 ? `DEMO 企業 ${n}` : '',
+      channel: ['LINE 社群', 'OpenChat', '顧問轉介'][index % 3],
+      notes: 'DEMO｜僅供產品流程驗證使用。',
+      investmentPreferences: {
+        industries: [INDUSTRIES[index % INDUSTRIES.length]],
+        ticketMinTwd: 500_000,
+        ticketMaxTwd: 2_000_000,
+      },
+      status: member ? 'converted' : ['new', 'contacted', 'qualified', 'archived'][index % 4],
+      memberId: member?.id || null,
+      convertedAt: member ? createdAt : null,
+      importedBy: 'admin-referrer-demo',
+      importedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+    };
+  });
+}
+
+function contentItem(index, projects) {
+  const n = index + 1;
+  const type = ['video', 'article', 'project_update'][index % 3];
+  const status = index === 5 ? 'draft' : 'published';
+  return {
+    id: `content-${String(n).padStart(3, '0')}`,
+    demo: true,
+    type,
+    title: `DEMO｜投資研究內容 ${n}`,
+    summary: '此為示意研究內容，不構成投資建議或邀約。',
+    url: type === 'article' ? `https://example.invalid/articles/${n}` : null,
+    videoUrl: type === 'video' ? `https://example.invalid/videos/${n}` : null,
+    projectId: index < projects.length ? projects[index].id : null,
+    visibility: index < 3 ? 'public' : type === 'project_update' ? 'qualified' : 'member',
+    status,
+    publicSafe: index < 3,
+    publishedAt: status === 'published' ? isoOffset(5 - index) : null,
+    riskDisclosure: status === 'published' ? 'DEMO｜投資涉及風險，內容僅供研究參考。' : null,
+    createdAt: isoOffset(10 - index),
+    updatedAt: isoOffset(5 - index),
   };
 }
 
@@ -135,6 +216,10 @@ function subscription(index, members, projects, referrers) {
     commissionBasis: referrer.commissionBasis,
     agreementReference: referrer.agreementReference,
     capturedAt,
+    ...(member.leadOwnerAttribution ? {
+      leadId: member.leadOwnerAttribution.leadId,
+      attributionSource: 'lead_owner',
+    } : {}),
   } : null;
   const commissionAmount = referralSnapshot
     ? calculateCommissionAmount(allocated, referralSnapshot.commissionRateBps)
@@ -177,6 +262,11 @@ function subscription(index, members, projects, referrers) {
       approvedAt: isoOffset(10 - (index % 10)),
       reference: `DEMO-S-${String(n).padStart(4, '0')}`,
     } : null,
+    acquisitionAttributionSnapshot: member.leadOwnerAttribution ? {
+      leadId: member.leadOwnerAttribution.leadId,
+      ownerReferrerId: member.leadOwnerAttribution.referrerId,
+      capturedAt,
+    } : null,
     referralSnapshot,
     commissionState,
     commissionBasisAmountTwd: referralSnapshot ? allocated : 0,
@@ -197,14 +287,29 @@ export function createSeedData() {
   const referrers = REFERRER_DEFINITIONS.map(referrer);
   const projects = Array.from({ length: 6 }, (_, index) => project(index));
   const members = Array.from({ length: 30 }, (_, index) => member(index, referrers));
+  const leadRecords = leads(members, referrers);
   const subscriptions = Array.from({ length: 25 }, (_, index) => subscription(index, members, projects, referrers));
+  const contentItems = Array.from({ length: 6 }, (_, index) => contentItem(index, projects));
+  const newsletterPreferences = members.slice(0, 5).map((item, index) => ({
+    memberId: item.id,
+    dailyDigestConsent: index < 3,
+    marketingConsent: index === 0,
+    emailDeliveryConsent: false,
+    lineDeliveryConsent: index === 0,
+    deliveryChannels: index === 0 ? ['in_app', 'line'] : ['in_app'],
+    updatedAt: isoOffset(1),
+  }));
   const now = new Date().toISOString();
   return {
-    meta: { schemaVersion: 3, demo: true, createdAt: now, updatedAt: now },
+    meta: { schemaVersion: 6, demo: true, createdAt: now, updatedAt: now },
     projects,
     referrers,
     members,
     subscriptions,
+    leads: leadRecords,
+    contentItems,
+    newsletterPreferences,
+    dailyDigests: [],
     activations: [],
     bookings: [],
     notifications: [],
@@ -215,7 +320,7 @@ export function createSeedData() {
       action: 'seed.initialized',
       actor: { type: 'system', id: 'seed' },
       before: null,
-      after: { projects: 6, referrers: 4, members: 30, subscriptions: 25 },
+      after: { projects: 6, referrers: 4, members: 30, subscriptions: 25, leads: 10, contentItems: 6 },
       reason: 'Initialize clearly labelled Demo data',
       createdAt: now,
     }],

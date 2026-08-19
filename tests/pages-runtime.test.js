@@ -8,6 +8,8 @@ import vm from 'node:vm';
 
 import {
   canUseDemoFallback,
+  filterPublicSafeContent,
+  normalizeDailyExperienceDto,
   normalizeApiBaseUrl,
   request,
   resolveApiUrl,
@@ -15,6 +17,7 @@ import {
   resolveRuntimeMode,
   shouldRejectStaticWrite,
 } from '../public/js/api.js';
+import { demoContent } from '../public/js/demo-data.js';
 import {
   activationSourceFromUrl,
   normalizeExternalHttpsUrl,
@@ -109,6 +112,92 @@ test('protected project content exposes approved AI and expert report metadata o
   ]);
 });
 
+test('public content fallback excludes drafts and member-only published items', () => {
+  const now = '2026-08-19T12:00:00+08:00';
+  const published = filterPublicSafeContent(demoContent, now);
+  assert.ok(published.length >= 1);
+  assert.ok(published.every((item) => item.status === 'published'
+    && item.publicSafe === true
+    && item.visibility === 'public'
+    && Boolean(item.riskDisclosure || item.riskNotice)
+    && Date.parse(item.publishedAt) <= Date.parse(now)));
+  assert.equal(published.some((item) => item.id === 'CONTENT-203'), false);
+  assert.equal(published.some((item) => item.title === '智慧製造計畫完成新場域驗證'), false);
+  const safe = { id: 'safe', status: 'published', publicSafe: true, visibility: 'public', riskDisclosure: '風險提示', publishedAt: '2026-08-19T01:00:00.000Z' };
+  assert.deepEqual(filterPublicSafeContent([
+    safe,
+    { ...safe, id: 'member-only', visibility: 'member' },
+    { ...safe, id: 'no-risk', riskDisclosure: '' },
+    { ...safe, id: 'no-date', publishedAt: '' },
+    { ...safe, id: 'future', publishedAt: '2026-08-20T01:00:00.000Z' },
+  ], now).map((item) => item.id), ['safe']);
+});
+
+test('production daily-experience DTOs normalize Apps wrappers without exposing contact identities', () => {
+  const experience = normalizeDailyExperienceDto({
+    digestResult: {
+      digest: {
+        digestDate: '2026-08-19',
+        progress: [
+          { requestedAmountTwd: 1_200_000, approvedAmountTwd: 1_000_000, receivedAmountTwd: 800_000, allocatedAmountTwd: 700_000, refundedAmountTwd: 100_000 },
+          { requestedAmountTwd: 300_000, approvedAmountTwd: 0, receivedAmountTwd: 0, allocatedAmountTwd: 0, refundedAmountTwd: 0 },
+        ],
+        contentItems: [{ id: 'CONTENT-PROD', type: 'video', status: 'published', title: '正式 DTO 影音' }],
+        matches: [{ projectId: 'PROJECT-PROD', displayName: '正式 DTO 專案', reasons: [{ label: '明確產業偏好相符' }] }],
+      },
+    },
+    contentResult: { content: [] },
+    matchResult: { matches: [] },
+    preferenceResult: {
+      preferences: {
+        dailyDigestConsent: true,
+        marketingConsent: false,
+        deliveryChannels: ['in_app', 'email'],
+      },
+      emailAvailable: true,
+      lineAvailable: false,
+    },
+  });
+
+  assert.equal(experience.digest.date, '2026-08-19');
+  assert.equal(experience.digest.investmentProgress.requestedAmountTwd, 1_500_000);
+  assert.equal(experience.digest.investmentProgress.approvedAmountTwd, 1_000_000);
+  assert.equal(experience.digest.investmentProgress.depositPaidAmountTwd, 800_000);
+  assert.equal(experience.digest.investmentProgress.accountRecordedAmountTwd, 700_000);
+  assert.equal(experience.digest.investmentProgress.allocatedAmountTwd, 700_000);
+  assert.equal(experience.contentFeed[0].title, '正式 DTO 影音');
+  assert.equal(experience.matches[0].projectId, 'PROJECT-PROD');
+  assert.equal(experience.preferences.emailAvailable, true);
+  assert.equal(experience.preferences.lineAvailable, false);
+  assert.equal(experience.preferences.emailDeliveryConsent, true);
+  assert.deepEqual(experience.preferences.deliveryChannels, ['in_app', 'email']);
+  assert.doesNotMatch(JSON.stringify(experience), /@[a-z0-9.-]+/i);
+
+  const nodeDirect = normalizeDailyExperienceDto({ digestResult: {
+    date: '2026-08-19',
+    investmentProgress: {
+      requestedAmountTwd: 9,
+      approvedAmountTwd: 8,
+      depositPaidAmountTwd: 7,
+      accountRecordedAmountTwd: 6,
+      allocatedAmountTwd: 5,
+    },
+  } });
+  assert.deepEqual({
+    requestedAmountTwd: nodeDirect.digest.investmentProgress.requestedAmountTwd,
+    approvedAmountTwd: nodeDirect.digest.investmentProgress.approvedAmountTwd,
+    depositPaidAmountTwd: nodeDirect.digest.investmentProgress.depositPaidAmountTwd,
+    accountRecordedAmountTwd: nodeDirect.digest.investmentProgress.accountRecordedAmountTwd,
+    allocatedAmountTwd: nodeDirect.digest.investmentProgress.allocatedAmountTwd,
+  }, {
+    requestedAmountTwd: 9,
+    approvedAmountTwd: 8,
+    depositPaidAmountTwd: 7,
+    accountRecordedAmountTwd: 6,
+    allocatedAmountTwd: 5,
+  });
+});
+
 test('state mutations obtain an auth/me CSRF token and send credentialed requests', async (t) => {
   const originalFetch = globalThis.fetch;
   const calls = [];
@@ -177,6 +266,8 @@ test('Pages build injects runtime config before every module and rewrites API li
   assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/subscriptions\.csv"/);
   assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/referrers\.csv"/);
   assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/commissions\.csv"/);
+  assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/leads\.csv"/);
+  assert.match(admin, /data-testid="lead-dashboard"/);
   assert.doesNotMatch(admin, /href="\/zhifu-invest\/api\//);
 
   const index = await readFile(join(directory, 'index.html'), 'utf8');
@@ -188,6 +279,13 @@ test('Pages build injects runtime config before every module and rewrites API li
   assert.match(index, /class="landing-mobile-dock"/);
   assert.match(index, /href="\/zhifu-invest\/activate\.html"[^>]*data-testid="line-add-friend"/);
   assert.match(index, /左右滑動查看更多研究/);
+  assert.match(index, /id="public-video-feed"/);
+  assert.doesNotMatch(index, /CONTENT-203|智慧製造計畫完成新場域驗證/);
+
+  const member = await readFile(join(directory, 'member.html'), 'utf8');
+  assert.match(member, /data-testid="member-digest"/);
+  assert.match(member, /data-testid="digest-channel-line"/);
+  assert.match(member, /data-testid="digest-channel-email"/);
 
   const landingCss = await readFile(join(directory, 'assets', 'landing.css'), 'utf8');
   assert.match(landingCss, /\.landing-page/);
