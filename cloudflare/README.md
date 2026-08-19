@@ -72,6 +72,7 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | `GET/POST /api/admin/content`, `PATCH /api/admin/content/:id` | `adminListContent` / `adminCreateContent` / `adminPatchContent` | Admin |
 | `GET /api/admin/newsletters/preview`, `POST /api/admin/newsletters/generate` | `adminDigestPreview` / `adminDigestGenerate` | Admin |
 | `GET /api/admin/export/leads.csv` | `adminExportProspects` | Admin |
+| `GET /api/admin/export/leads.xlsx-data` | `adminExportProspectRows` | Admin；回傳 `lead-export-v1` 的 18 欄 typed JSON rows，workbook 只在瀏覽器本機產生 |
 | `GET/PATCH /api/newsletter/preferences` | `getNewsletterPreferences` / `patchNewsletterPreferences` | Member |
 | `GET /api/digest/today`, `GET /api/matches`, `GET /api/content/feed` | `getDailyDigest` / `listMatches` / `listContentFeed` | Member |
 | `GET /api/content/public` | `listPublicContent` | Public; only published + publicSafe |
@@ -82,6 +83,11 @@ Apps Script 用 `APPS_SCRIPT_SHARED_SECRET` 驗 HMAC-SHA256 base64，並拒絕�
 | Verified LINE webhook | `webhookEvent`，成功後才標記 delivered | Worker internal/service |
 
 每個 `payloadJson` 都含 Worker 產生的 `context`（role、actorId、memberId、requestId），再依 operation 加入明確欄位。Apps Script 不得相信瀏覽器自行提供的會員或角色欄位。
+
+Excel 匯入不接受 raw workbook、multipart 或 base64。管理瀏覽器以部署包內的本機 SheetJS 將 `.xlsx`
+轉成既有 canonical rows，再呼叫 `POST /api/admin/leads/import`；該 JSON request 仍受 64 KB 上限約束，
+Apps operation 仍限制 1–500 列且任一驗證錯誤即整批拒絕。`leads.xlsx-data` 只傳 typed JSON，
+不在 Worker 或 Apps Script 產生／緩衝 workbook。
 
 Pages 潛客表單的 `ownerReferrerId`、中文 channel、`sourceReference`、`sourceEvidence`
 會在 Worker 轉為 Apps canonical `acquisitionOwnerId`、channel enum、`source/sourceReference`與
@@ -154,6 +160,27 @@ npx wrangler deploy --dry-run --config cloudflare/wrangler.jsonc
 ```
 
 正式建立資源後，把 placeholder D1 UUID 換成實際 binding ID，再執行 migration 與部署。
+
+### 隔離的 workers.dev staging
+
+`env.staging` 使用獨立 Worker `zhifu-invest-gateway-staging` 與 D1
+`zhifu-invest-gateway-staging`（`703822c4-daf0-46cc-a108-bf0651e5084d`），保留 GitHub Pages origin、
+cross-site `SameSite=None` cookie 與 `workers_dev=true`。目前 Cloudflare 帳號尚未啟用 R2，因此 staging
+刻意不宣告 `DECKS`；所有 deck token／download route 固定 fail closed 回
+`503 deck_storage_not_configured`，不會回落到 production bucket。
+Staging 也不安裝 Cron trigger；在 Apps Script／LINE secrets 尚未設定前，不執行無效的 webhook 重試或每日摘要排程。
+
+```bash
+npx wrangler types cloudflare/src/worker-configuration.d.ts --config cloudflare/wrangler.jsonc --env staging
+npx wrangler d1 migrations apply zhifu-invest-gateway-staging --remote --config cloudflare/wrangler.jsonc --env staging
+npx wrangler deploy --dry-run --config cloudflare/wrangler.jsonc --env staging
+npx wrangler deploy --config cloudflare/wrangler.jsonc --env staging
+```
+
+staging secrets 必須逐一使用 `wrangler secret put ... --env staging` 設定，named environment 不會繼承
+production secrets。暫不設定 Apps／LINE secrets 時，Apps proxy、管理員登入、LINE Login／webhook 會各自
+回穩定 503，不能視為真實 persistence、audit 或通知驗收；`/healthz` 與不依賴 provider 的 gateway
+邊界仍可供 staging smoke test。此狀態下不要建立測試繞過或連向 production Apps／Sheets。
 
 `wrangler.jsonc` 已設定 `*/5 * * * *` Cron。每次仍先處理 webhook 與 D1 cleanup，再以
 `Asia/Taipei` 日期呼叫冪等 `adminDigestGenerate`；Apps Script 的每日 fallback trigger 也呼叫同一資料規則。

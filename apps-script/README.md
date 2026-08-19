@@ -167,6 +167,7 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 | `admin.notifications.send` | `params.notificationId`, `body.reason`；人工核准後進 `queued` |
 | `admin.exports.members`, `admin.exports.subscriptions`, `adminExport(resource=referrers|commissions)` | → `{filename,mimeType,csv}`；每次匯出都 append audit |
 | `adminListProspects`, `adminCreateProspect`, `adminImportProspects`, `adminPatchProspect` | 名單查詢／單筆建立／最多 500 列匯入／狀態與會員連結；通用 contact 會安全辨識 email/phone，explicit email/phone 同時保留；跨 owner 重複為 conflict，batch 以單次 Sheets range write 提交 |
+| `adminExportProspectRows` | `{reason}` → `{filename,schemaVersion:"lead-export-v1",headers,rows}`；每列固定 exact 18 fields，15 個文字欄與 3 個數字欄，與 lead CSV 共用唯一 projection 並 append audit |
 | `adminListContent`, `adminCreateContent`, `adminPatchContent` | 投資影音與資訊管理；公開內容必須 `published + publicSafe`，網址只接受 HTTPS |
 | `adminListMatches`, `listMatches` | 依會員明示產業、票額區間、有效資格與逐案權限產生可解釋且 deterministic 的媒合 |
 | `getNewsletterPreferences`, `patchNewsletterPreferences` | 回傳 `preference + emailAvailable/lineAvailable`（不回傳聯絡身份）；`in_app` 永遠存在，LINE／Email 各需 `dailyDigestConsent` + channel-specific consent + 可投遞身份 |
@@ -200,6 +201,12 @@ Apps Script 只相信簽名 envelope 內的 Worker `actor`；不使用瀏覽器 
 - 專案媒合只納入 `published`、`publishedAt <= now`、未撤回／關閉，且具有有效台北日期 deadline 的專案。
 - 每日摘要站內進度固定為 requested、approved、depositPaid、accountRecorded、allocated 五個 TWD 狀態。
 - 所有 CSV 匯出會中和空白或 tab 後以 `= + - @` 開頭的公式型儲存格。
+- 潛客 CSV 與 Excel 共用 `lead-export-v1` authoritative 18 欄 typed projection。Admin 的 `.xlsx`
+  只由瀏覽器本機 SheetJS global 建立；repository 不載入 CDN，也不把 workbook/base64 傳給 Apps 或 Worker。
+  若部署包沒有提供完整 `window.XLSX` API，Excel 匯入／匯出會 fail closed，但 CSV 與 canonical
+  `adminImportProspects` 仍可使用。`.xlsx` 匯入要求恰好一張非空白工作表、檔案上限 5 MiB、最多
+  10,000 個實際儲存格，且拒絕公式與超連結；解析後仍須 1–500 列，所有 preview errors 清空才會
+  一次呼叫 `adminImportProspects`。
 - 導入歸屬與分潤是兩條資料線：每筆認購保存無 PII 的 `acquisitionAttributionSnapshot`
   供永久業績歸屬；只有當下有效的合作協議才另建 `referralSnapshot` 計算分潤。
 - 每日摘要永遠可在登入後站內查看；`dailyDigestConsent` 只控制主動 LINE／Email。

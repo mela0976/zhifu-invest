@@ -479,6 +479,7 @@ function dispatchOperation_(operation, payload) {
     adminDigestPreview: operationAdminDigestPreview_,
     adminDigestGenerate: operationAdminDigestGenerate_,
     adminExportProspects: operationAdminExportProspects_,
+    adminExportProspectRows: operationAdminExportProspectRows_,
     getNewsletterPreferences: operationGetNewsletterPreferences_,
     patchNewsletterPreferences: operationPatchNewsletterPreferences_,
     getDailyDigest: operationGetDailyDigest_,
@@ -542,6 +543,7 @@ function dispatchOperation_(operation, payload) {
   aliases['admin.newsletters.preview'] = function (value) { return operationAdminDigestPreview_(value, normalizeContext_(value)); };
   aliases['admin.newsletters.generate'] = function (value) { return operationAdminDigestGenerate_(value, normalizeContext_(value)); };
   aliases['admin.exports.leads'] = function (value) { return operationAdminExportProspects_(value, normalizeContext_(value)); };
+  aliases['admin.exports.leads_xlsx_data'] = function (value) { return operationAdminExportProspectRows_(value, normalizeContext_(value)); };
   aliases['newsletter.preferences.get'] = function (value) { return operationGetNewsletterPreferences_(value, normalizeContext_(value)); };
   aliases['newsletter.preferences.update'] = function (value) { return operationPatchNewsletterPreferences_(value, normalizeContext_(value)); };
   aliases['digest.today'] = function (value) { return operationGetDailyDigest_(value, normalizeContext_(value)); };

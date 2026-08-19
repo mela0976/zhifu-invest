@@ -1,4 +1,4 @@
-import { api, appUrl, request } from './api.js';
+import { api, appUrl, LEAD_EXPORT_HEADERS, request } from './api.js';
 import { emptyState, errorState, escapeHtml, formatDate, formatMoney, initShell, openDialog, closeDialog, qualificationExpiryIso, resolveAdminDashboardRoute, setButtonBusy, sourceNotice, toast } from './common.js';
 import { statusLabels } from './demo-data.js';
 
@@ -11,6 +11,8 @@ let selectedCommission = null;
 let selectedLead = null;
 let selectedContent = null;
 let leadImportRows = [];
+let leadImportErrors = [];
+let leadImportSource = '';
 let newsletterPreview = null;
 let activeView = 'overview';
 
@@ -368,49 +370,210 @@ function openLead(id = '') {
   openDialog(leadDialog);
 }
 
-function csvFields(line) {
-  const values = [];
-  let value = '';
+const LEAD_IMPORT_ALIASES = new Map([
+  ['姓名', 'displayName'], ['姓名稱呼', 'displayName'], ['name', 'displayName'], ['displayname', 'displayName'], ['fullname', 'displayName'],
+  ['聯絡方式', 'contact'], ['聯絡', 'contact'], ['contact', 'contact'], ['contactinfo', 'contact'], ['phone', 'contact'], ['email', 'contact'],
+  ['來源管道', 'channel'], ['管道', 'channel'], ['channel', 'channel'], ['sourcechannel', 'channel'],
+  ['唯一來源參考編號', 'sourceReference'], ['來源參考編號', 'sourceReference'], ['sourcereference', 'sourceReference'], ['sourceref', 'sourceReference'],
+]);
+const LEAD_IMPORT_FIELDS = ['displayName', 'contact', 'channel', 'sourceReference'];
+const LEAD_IMPORT_LABELS = { displayName: '姓名', contact: '聯絡方式', channel: '來源管道', sourceReference: '唯一來源參考編號' };
+const XLSX_MAX_BYTES = 5 * 1024 * 1024;
+const LEAD_EXPORT_NUMERIC_HEADERS = new Set([
+  'subscriptionCount', 'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+]);
+
+function normalizeLeadHeader(value) {
+  return String(value ?? '').normalize('NFKC').trim().toLowerCase().replace(/[\s_\-/（）()]+/g, '');
+}
+
+function csvRecords(value) {
+  const source = String(value || '').replace(/^\uFEFF/, '');
+  const records = [];
+  const errors = [];
+  let fields = [];
+  let field = '';
   let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (character === '"' && quoted && line[index + 1] === '"') { value += '"'; index += 1; }
+  let lineNumber = 1;
+  let recordLine = 1;
+  const pushRecord = () => {
+    fields.push(field.trim());
+    if (fields.some(Boolean)) records.push({ fields, lineNumber: recordLine });
+    fields = [];
+    field = '';
+    recordLine = lineNumber + 1;
+  };
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"' && quoted && source[index + 1] === '"') { field += '"'; index += 1; }
     else if (character === '"') quoted = !quoted;
-    else if (character === ',' && !quoted) { values.push(value.trim()); value = ''; }
-    else value += character;
+    else if (character === ',' && !quoted) { fields.push(field.trim()); field = ''; }
+    else if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && source[index + 1] === '\n') index += 1;
+      pushRecord();
+      lineNumber += 1;
+      recordLine = lineNumber;
+    } else {
+      field += character;
+      if (character === '\n') lineNumber += 1;
+    }
   }
-  values.push(value.trim());
-  return values;
+  if (field || fields.length) pushRecord();
+  if (quoted) errors.push(`第 ${recordLine} 列 CSV 引號未成對。`);
+  return { records, errors };
+}
+
+function leadHeaderIndexes(fields) {
+  const indexes = {};
+  const errors = [];
+  fields.forEach((header, index) => {
+    const field = LEAD_IMPORT_ALIASES.get(normalizeLeadHeader(header));
+    if (!field) return;
+    if (indexes[field] !== undefined) errors.push(`標題列重複「${LEAD_IMPORT_LABELS[field]}」欄位。`);
+    else indexes[field] = index;
+  });
+  LEAD_IMPORT_FIELDS.forEach((field) => {
+    if (indexes[field] === undefined) errors.push(`標題列缺少「${LEAD_IMPORT_LABELS[field]}」欄位。`);
+  });
+  return { indexes, errors };
 }
 
 function parseLeadCsv(value) {
-  const lines = String(value || '').replace(/^\uFEFF/, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return [];
-  const first = csvFields(lines[0]);
-  const hasHeader = /姓名|name/i.test(first[0] || '') && /聯絡|contact/i.test(first[1] || '');
-  return lines.slice(hasHeader ? 1 : 0).map(csvFields).filter((fields) => fields.some(Boolean)).map((fields) => {
-    const contact = fields[1] || '';
-    return {
-      displayName: fields[0] || '', contact, ...(contact.includes('@') ? { email: contact } : { phone: contact }),
-      channel: fields[2] || '其他', sourceReference: fields[3] || '',
-    };
-  }).filter((item) => item.displayName && item.contact && item.sourceReference);
+  const { records, errors } = csvRecords(value);
+  if (!records.length) return { rows: [], errors, source: 'CSV' };
+  const { indexes, errors: headerErrors } = leadHeaderIndexes(records[0].fields);
+  const allErrors = [...errors, ...headerErrors];
+  if (headerErrors.length) return { rows: [], errors: allErrors, source: 'CSV' };
+  const dataRecords = records.slice(1);
+  if (dataRecords.length > 500) allErrors.push(`CSV 最多可匯入 500 列；目前為 ${dataRecords.length} 列。`);
+  const rows = [];
+  const seenReferences = new Set();
+  dataRecords.slice(0, 500).forEach(({ fields, lineNumber }) => {
+    const values = Object.fromEntries(LEAD_IMPORT_FIELDS.map((field) => [field, String(fields[indexes[field]] || '').trim()]));
+    const rowErrors = LEAD_IMPORT_FIELDS.filter((field) => !values[field]).map((field) => `第 ${lineNumber} 列缺少「${LEAD_IMPORT_LABELS[field]}」。`);
+    const referenceKey = values.sourceReference.toLocaleLowerCase('en-US');
+    if (referenceKey && seenReferences.has(referenceKey)) rowErrors.push(`第 ${lineNumber} 列「唯一來源參考編號」在本批重複。`);
+    else if (referenceKey) seenReferences.add(referenceKey);
+    if (rowErrors.length) { allErrors.push(...rowErrors); return; }
+    const contact = values.contact;
+    rows.push({
+      displayName: values.displayName,
+      contact,
+      ...(contact.includes('@') ? { email: contact } : { phone: contact }),
+      channel: values.channel,
+      sourceReference: values.sourceReference,
+    });
+  });
+  if (!rows.length && !allErrors.length) allErrors.push('CSV 沒有資料列。');
+  return { rows, errors: allErrors, source: 'CSV' };
+}
+
+function setLeadImportResult({ rows = [], errors = [], source = '' } = {}) {
+  leadImportRows = rows;
+  leadImportErrors = errors;
+  leadImportSource = source;
+  renderLeadImportPreview();
 }
 
 function renderLeadImportPreview() {
   const target = document.querySelector('#lead-import-preview');
   const button = document.querySelector('#lead-import-submit');
-  button.disabled = leadImportRows.length === 0;
-  button.textContent = `匯入 ${leadImportRows.length} 筆`;
-  target.innerHTML = leadImportRows.length ? `<div class="import-preview__head"><strong>準備匯入 ${leadImportRows.length} 筆</strong><span>只顯示前 5 筆</span></div><ol>${leadImportRows.slice(0, 5).map((item) => `<li><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.contact)}｜${escapeHtml(item.channel)}｜${escapeHtml(item.sourceReference)}</span></li>`).join('')}</ol>` : '<p class="micro">沒有可匯入的完整資料；每列至少需要姓名、聯絡方式與唯一來源參考編號。</p>';
+  const hasErrors = leadImportErrors.length > 0;
+  button.disabled = leadImportRows.length === 0 || hasErrors;
+  button.textContent = hasErrors ? '請先修正錯誤' : `匯入 ${leadImportRows.length} 筆`;
+  document.querySelector('#lead-csv-file').setAttribute('aria-invalid', String(hasErrors));
+  document.querySelector('#lead-csv-text').setAttribute('aria-invalid', String(hasErrors));
+  const source = leadImportSource ? `<span>${escapeHtml(leadImportSource)}</span>` : '';
+  const valid = leadImportRows.length ? `<div class="import-preview__head"><strong>${hasErrors ? `${leadImportRows.length} 筆資料可用` : `準備匯入 ${leadImportRows.length} 筆`}</strong>${source || '<span>只顯示前 5 筆</span>'}</div><ol>${leadImportRows.slice(0, 5).map((item) => `<li><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.contact)}｜${escapeHtml(item.channel)}｜${escapeHtml(item.sourceReference)}</span></li>`).join('')}</ol>` : '';
+  const invalid = hasErrors ? `<div class="import-errors" role="alert"><strong>${leadImportErrors.length} 個錯誤；全部修正後才能匯入</strong><ul>${leadImportErrors.slice(0, 10).map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ul>${leadImportErrors.length > 10 ? `<p>另有 ${leadImportErrors.length - 10} 個錯誤未顯示。</p>` : ''}</div>` : '';
+  target.innerHTML = valid || invalid ? `${valid}${invalid}` : '<p class="micro">貼上 CSV 或選擇 Excel／CSV 後顯示預覽。</p>';
 }
 
 function openLeadImport() {
   document.querySelector('#lead-import-form').reset();
   document.querySelector('#lead-import-owner').innerHTML = `<option value="">請選擇</option>${dashboard.referrers.filter((item) => item.status !== 'disabled').map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.displayName || item.name)}｜${escapeHtml(item.code || item.id)}</option>`).join('')}`;
-  leadImportRows = [];
-  renderLeadImportPreview();
+  setLeadImportResult();
   openDialog(leadImportDialog);
+}
+
+function workbookWorkerCall(type, payload, transfer = []) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./xlsx-import-worker.js', import.meta.url));
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const timeout = window.setTimeout(() => {
+      worker.terminate();
+      reject(new Error('Excel 解析逾時，請縮小檔案後重試。'));
+    }, 10_000);
+    const finish = (callback) => {
+      window.clearTimeout(timeout);
+      worker.terminate();
+      callback();
+    };
+    worker.addEventListener('message', (event) => {
+      if (event.data?.requestId !== requestId) return;
+      finish(() => resolve(event.data));
+    });
+    worker.addEventListener('error', (event) => finish(() => reject(new Error(event.message || 'Excel Worker 無法啟動。'))));
+    worker.postMessage({ type, requestId, ...payload }, transfer);
+  });
+}
+
+async function parseLeadXlsx(file) {
+  if (file.size > XLSX_MAX_BYTES) return { rows: [], errors: ['Excel 檔案不得超過 5 MiB。'], source: 'Excel' };
+  const buffer = await file.arrayBuffer();
+  const result = await workbookWorkerCall('parse-xlsx', { buffer }, [buffer]);
+  return { rows: result.rows || [], errors: result.errors || [], source: result.sheetName ? `Excel 工作表：${result.sheetName}` : 'Excel' };
+}
+
+function exportedLeadRows(csv) {
+  const { records, errors } = csvRecords(csv);
+  if (errors.length) throw new Error(errors[0]);
+  if (!records.length) throw new Error('伺服器未回傳潛客匯出資料。');
+  const headers = records[0].fields;
+  if (headers.length !== LEAD_EXPORT_HEADERS.length || headers.some((field, index) => field !== LEAD_EXPORT_HEADERS[index])) {
+    throw new Error('潛客匯出欄位版本不符，已停止產生 Excel。');
+  }
+  const rows = records.slice(1).map(({ fields, lineNumber }) => {
+    if (fields.length !== LEAD_EXPORT_HEADERS.length) throw new Error(`潛客匯出第 ${lineNumber} 列欄位數不符。`);
+    return fields.map((value, index) => {
+      const header = LEAD_EXPORT_HEADERS[index];
+      if (!LEAD_EXPORT_NUMERIC_HEADERS.has(header)) return value;
+      const number = Number(value);
+      if (!Number.isSafeInteger(number) || number < 0) {
+        throw new Error(`潛客匯出第 ${lineNumber} 列的 ${header} 不是有效整數。`);
+      }
+      return number;
+    });
+  });
+  return [LEAD_EXPORT_HEADERS, ...rows];
+}
+
+function taipeiFilenameDate(value = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(value).replaceAll('-', '');
+}
+
+async function exportLeadsXlsx(button) {
+  setButtonBusy(button, true, '正在產生…');
+  try {
+    const result = await api.adminLeadExportCsv();
+    const csv = typeof result === 'string' ? result : result?.data;
+    const workbook = await workbookWorkerCall('write-xlsx', { rows: exportedLeadRows(csv) });
+    if (!(workbook.buffer instanceof ArrayBuffer)) throw new Error(workbook.errors?.[0] || 'Excel 產生失敗。');
+    const url = URL.createObjectURL(new Blob([workbook.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `zhifu-leads-v1-${taipeiFilenameDate()}.xlsx`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    toast(result?.source === 'demo-fallback' ? '已匯出 DEMO 潛客 Excel；不含真實資料。' : '已由稽核 CSV 產生潛客 Excel。');
+  } catch (error) {
+    toast(`潛客 Excel 未匯出：${error.message}`, 'error');
+  } finally {
+    setButtonBusy(button, false);
+  }
 }
 
 function openContent(id = '') {
@@ -563,22 +726,33 @@ document.addEventListener('click', async (event) => {
 
 document.querySelector('#lead-create').addEventListener('click', () => openLead());
 document.querySelector('#lead-import-open').addEventListener('click', openLeadImport);
+document.querySelector('#lead-export-xlsx').addEventListener('click', (event) => exportLeadsXlsx(event.currentTarget));
 document.querySelector('#content-create').addEventListener('click', () => openContent());
 
 document.querySelector('#lead-csv-text').addEventListener('input', (event) => {
-  leadImportRows = parseLeadCsv(event.currentTarget.value);
-  renderLeadImportPreview();
+  document.querySelector('#lead-csv-file').value = '';
+  setLeadImportResult(parseLeadCsv(event.currentTarget.value));
 });
 
 document.querySelector('#lead-csv-file').addEventListener('change', async (event) => {
   const [file] = event.currentTarget.files || [];
   if (!file) return;
   try {
-    const csv = await file.text();
-    document.querySelector('#lead-csv-text').value = csv;
-    leadImportRows = parseLeadCsv(csv);
-    renderLeadImportPreview();
-  } catch (error) { toast(`CSV 無法讀取：${error.message}`, 'error'); }
+    document.querySelector('#lead-csv-text').value = '';
+    leadImportRows = [];
+    leadImportErrors = [];
+    leadImportSource = '';
+    document.querySelector('#lead-import-submit').disabled = true;
+    document.querySelector('#lead-import-preview').innerHTML = '<p class="micro" role="status">正在檢查檔案…</p>';
+    const isXlsx = file.name.toLowerCase().endsWith('.xlsx') || file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const isCsv = file.name.toLowerCase().endsWith('.csv') || file.type === 'text/csv';
+    if (!isXlsx && !isCsv) throw new Error('只接受 .xlsx 或 .csv 檔案。');
+    if (isXlsx) setLeadImportResult(await parseLeadXlsx(file));
+    else setLeadImportResult(parseLeadCsv(await file.text()));
+  } catch (error) {
+    setLeadImportResult({ rows: [], errors: [error.message], source: '檔案' });
+    toast(`名單檔案無法讀取：${error.message}`, 'error');
+  }
 });
 
 document.querySelector('#lead-form').addEventListener('submit', async (event) => {
@@ -623,6 +797,7 @@ document.querySelector('#lead-import-form').addEventListener('submit', async (ev
   setButtonBusy(button, true, '正在匯入…');
   try {
     const fields = Object.fromEntries(new FormData(form));
+    if (leadImportErrors.length) throw new Error('請先修正所有錯誤，再重新匯入。');
     if (!leadImportRows.length) throw new Error('沒有可匯入的完整資料。');
     const payload = { rows: leadImportRows.map((item) => ({ ...item, ownerReferrerId: fields.ownerReferrerId })), sourceEvidence: String(fields.sourceEvidence || '').trim(), reason: String(fields.reason || '').trim() };
     if (!fields.ownerReferrerId || !payload.sourceEvidence || !payload.reason) throw new Error('請選擇負責引薦方，並填寫本批來源證據與匯入理由。');
@@ -631,8 +806,8 @@ document.querySelector('#lead-import-form').addEventListener('submit', async (ev
     dashboard.leads = imported.length ? [...imported, ...dashboard.leads] : dashboard.leads;
     renderLeads(); closeDialog(leadImportDialog);
     toast(`已匯入 ${Number(result?.count ?? imported.length ?? leadImportRows.length)} 筆潛客；導入者與來源證據已鎖定。`);
-  } catch (error) { toast(`CSV 未匯入：${error.message}`, 'error'); }
-  finally { setButtonBusy(button, false); }
+  } catch (error) { toast(`名單未匯入：${error.message}`, 'error'); }
+  finally { setButtonBusy(button, false); renderLeadImportPreview(); }
 });
 
 document.querySelector('#content-form').addEventListener('submit', async (event) => {

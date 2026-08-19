@@ -408,7 +408,9 @@ describe('Cloudflare gateway integration', () => {
     const sessionB = 'raw-session-b';
     await insertSession(sessionA, 'line-a');
     await insertSession(sessionB, 'line-b');
-    await env.DECKS.put('protected/project-a.pdf', new TextEncoder().encode('private deck'), {
+    const decks = env.DECKS;
+    if (!decks) throw new Error('Test requires the production DECKS binding');
+    await decks.put('protected/project-a.pdf', new TextEncoder().encode('private deck'), {
       httpMetadata: { contentType: 'application/pdf' },
     });
     const rawDeckToken = 'one-session-only-token';
@@ -437,6 +439,38 @@ describe('Cloudflare gateway integration', () => {
       'SELECT expires_at - created_at AS ttl FROM deck_tokens WHERE token_hash = ?1',
     ).bind(await sha256Hex(rawDeckToken)).first<{ ttl: number }>();
     expect(expiry?.ttl).toBe(300);
+  });
+
+  it('fails closed on every deck route when staging has no R2 binding', async () => {
+    const rawSession = 'staging-no-decks-session';
+    await insertSession(rawSession, 'line-no-decks');
+    const stagingEnv = { ...env, DECKS: undefined };
+    let appsCalls = 0;
+    vi.stubGlobal('fetch', async () => {
+      appsCalls += 1;
+      return Response.json({ ok: true, data: { allowed: true, objectKey: 'unreachable.pdf' } });
+    });
+    const mutationRequest = new Request('https://gateway.example/api/projects/project-a/deck-token', {
+      method: 'POST',
+      headers: {
+        cookie: `${SESSION_COOKIE}=${rawSession}`, origin: allowedOrigin,
+        'x-csrf-token': 'csrf-line-no-decks', 'content-type': 'application/json',
+      },
+      body: '{}',
+    });
+    const mutationContext = createExecutionContext();
+    const tokenResponse = await worker.fetch(mutationRequest, stagingEnv, mutationContext);
+    expect(tokenResponse.status).toBe(503);
+    await expect(tokenResponse.json()).resolves.toMatchObject({ error: { code: 'deck_storage_not_configured' } });
+
+    const downloadRequest = new Request('https://gateway.example/api/decks/unused', {
+      headers: { cookie: `${SESSION_COOKIE}=${rawSession}` },
+    });
+    const downloadContext = createExecutionContext();
+    const downloadResponse = await worker.fetch(downloadRequest, stagingEnv, downloadContext);
+    expect(downloadResponse.status).toBe(503);
+    await expect(downloadResponse.json()).resolves.toMatchObject({ error: { code: 'deck_storage_not_configured' } });
+    expect(appsCalls).toBe(0);
   });
 
   it('returns credentialed CORS headers only to an allowed origin', async () => {
@@ -699,6 +733,92 @@ describe('Cloudflare gateway integration', () => {
     expect(calls[13].payload).toMatchObject({ content: { type: 'video', status: 'published', publicSafe: true } });
     expect(calls[13].payload.content).not.toHaveProperty('visibility');
     expect(calls[15].payload).toMatchObject({ digestDate: '2026-08-19', reason: 'preview only', send: false });
+  });
+
+  it('returns authoritative typed lead rows for browser-side XLSX generation to admins only', async () => {
+    const adminSession = 'admin-xlsx-data-session';
+    await insertAdminSession(adminSession);
+    const headers = [
+      'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
+      'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
+      'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
+      'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+    ];
+    const data = {
+      filename: 'zhifu-leads-20260819-070000.xlsx', schemaVersion: 'lead-export-v1', headers,
+      rows: [{
+        schemaVersion: 'lead-export-v1', id: 'lead-1', displayName: '=王小姐', phone: '0912345678',
+        email: 'wang@example.com', channel: 'email', sourceReference: 'SOURCE-1',
+        privacyEvidenceReference: 'PRIVACY-1', privacyConsentedAt: '2026-08-18T00:00:00.000Z',
+        privacyNoticeVersion: 'privacy-v1', ownerReferrerId: 'ref-1', memberId: 'member-1', status: 'converted',
+        importedBy: 'admin-1', importedAt: '2026-08-18T00:00:00.000Z', subscriptionCount: 1,
+        attributableRequestedAmountTwd: 500000, attributableAllocatedAmountTwd: 300000,
+      }],
+    };
+    const calls: Array<{ operation: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const envelope = JSON.parse(String(init?.body)) as { operation: string; payloadJson: string };
+      calls.push({ operation: envelope.operation, payload: JSON.parse(envelope.payloadJson) });
+      return Response.json({ ok: true, data });
+    });
+
+    const unauthenticated = await invoke('/api/admin/export/leads.xlsx-data');
+    expect(unauthenticated.response.status).toBe(401);
+    const result = await invoke('/api/admin/export/leads.xlsx-data', {
+      headers: { cookie: `${SESSION_COOKIE}=${adminSession}` },
+    });
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    expect(result.response.headers.get('cache-control')).toBe('no-store');
+    await expect(result.response.json()).resolves.toEqual({ ok: true, data });
+    expect(calls).toEqual([{
+      operation: 'adminExportProspectRows',
+      payload: {
+        context: { role: 'admin', actorId: 'admin-1', memberId: 'admin-1', requestId: expect.any(String) },
+        reason: 'Admin requested lead Excel export data',
+      },
+    }]);
+  });
+
+  it('rejects malformed XLSX export DTOs instead of forwarding untyped Apps data', async () => {
+    const adminSession = 'admin-xlsx-invalid-session';
+    await insertAdminSession(adminSession);
+    vi.stubGlobal('fetch', async () => Response.json({ ok: true, data: {
+      filename: 'leads.xlsx', schemaVersion: 'lead-export-v1', headers: ['id'],
+      rows: [{ id: 'lead-1', rawWorkbookBase64: 'UEsDBA==' }],
+    } }));
+    const result = await invoke('/api/admin/export/leads.xlsx-data', {
+      headers: { cookie: `${SESSION_COOKIE}=${adminSession}` },
+    });
+    expect(result.response.status).toBe(502);
+    await expect(result.response.json()).resolves.toMatchObject({ error: { code: 'apps_script_invalid_response' } });
+  });
+
+  it('keeps lead imports JSON-only and fails closed above the 64 KiB application limit', async () => {
+    const adminSession = 'admin-xlsx-import-limit';
+    await insertAdminSession(adminSession);
+    let outboundCalls = 0;
+    vi.stubGlobal('fetch', async () => {
+      outboundCalls += 1;
+      return Response.json({ ok: true, data: {} });
+    });
+    const headers = {
+      cookie: `${SESSION_COOKIE}=${adminSession}`, origin: allowedOrigin,
+      'x-csrf-token': 'csrf-admin', 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    };
+    const rawWorkbook = await invoke('/api/admin/leads/import', {
+      method: 'POST', headers, body: 'PK\u0003\u0004not-a-json-workbook',
+    });
+    expect(rawWorkbook.response.status).toBe(415);
+
+    const oversized = await invoke('/api/admin/leads/import', {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ rows: [{ displayName: 'Lead', contact: 'lead@example.com', source: 'event' }], reason: 'x'.repeat(66 * 1024) }),
+    });
+    expect(oversized.response.status).toBe(413);
+    await expect(oversized.response.json()).resolves.toMatchObject({ error: { code: 'payload_too_large' } });
+    expect(outboundCalls).toBe(0);
   });
 
   it('member growth responses remove owner/referrer/commission and PII at the gateway', async () => {

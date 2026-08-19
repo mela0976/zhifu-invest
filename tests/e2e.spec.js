@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import * as XLSX from 'xlsx';
 
 const paths = {
   landing: process.env.E2E_LANDING_PATH || '/',
@@ -570,11 +572,56 @@ test.describe('致富投資 mobile and role journeys', () => {
       expect(linkCandidate?.referralAttribution?.referrerId).toBeTruthy();
 
       await adminPage.getByTestId('lead-import-open').click();
-      await adminPage.getByTestId('lead-csv-text').fill(`姓名,聯絡方式,來源管道,唯一來源參考編號\n${leadName},${leadPhone},OpenChat,${sourceReference}`);
       await adminPage.getByTestId('lead-import-owner').selectOption(linkCandidate.referralAttribution.referrerId);
       await adminPage.getByTestId('lead-import-evidence').fill(evidenceReference);
       await adminPage.locator('#lead-import-reason').fill('Playwright：確認來源與隱私同意後批次匯入');
+
+      let importPostCount = 0;
+      adminPage.on('request', (request) => {
+        if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/api/admin/leads/import')) importPostCount += 1;
+      });
+
+      await adminPage.getByTestId('lead-csv-text').fill(`姓名,聯絡方式,來源管道,唯一來源參考編號\n${leadName},${leadPhone},OpenChat,${sourceReference}\n缺少來源,0911111111,OpenChat,`);
+      await expect(adminPage.getByTestId('lead-import-submit')).toBeDisabled();
+      await expect(adminPage.locator('#lead-import-preview')).toContainText('第 3 列');
+      expect(importPostCount).toBe(0);
+
+      const invalidSheet = XLSX.utils.aoa_to_sheet([
+        ['Name', 'Contact', 'Channel', 'Source Reference'],
+        ['可用資料', '0911222333', 'OpenChat', `PW-VALID-${unique}`],
+        ['數字電話', 912345678, 'OpenChat', `PW-NUMERIC-${unique}`],
+        ['公式資料', '0911444555', 'OpenChat', `PW-FORMULA-${unique}`],
+        ['超連結資料', '0911666777', 'OpenChat', `PW-LINK-${unique}`],
+      ]);
+      invalidSheet.A4.f = '"公式資料"';
+      invalidSheet.A4.v = '公式資料';
+      invalidSheet.A5.l = { Target: 'https://example.invalid/untrusted' };
+      const invalidBook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(invalidBook, invalidSheet, 'LeadImport');
+      await adminPage.locator('#lead-csv-file').setInputFiles({
+        name: 'mixed-errors.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: Buffer.from(XLSX.write(invalidBook, { type: 'array', bookType: 'xlsx' })),
+      });
+      await expect(adminPage.getByTestId('lead-import-submit')).toBeDisabled();
+      await expect(adminPage.locator('#lead-import-preview')).toContainText('數字格式');
+      await expect(adminPage.locator('#lead-import-preview')).toContainText('公式');
+      await expect(adminPage.locator('#lead-import-preview')).toContainText('超連結');
+      expect(importPostCount).toBe(0);
+
+      const validSheet = XLSX.utils.aoa_to_sheet([
+        ['姓名', '聯絡方式', '來源管道', '唯一來源參考編號'],
+        [leadName, leadPhone, 'OpenChat', sourceReference],
+      ]);
+      const validBook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(validBook, validSheet, 'LeadImport');
+      await adminPage.locator('#lead-csv-file').setInputFiles({
+        name: 'valid-leads.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: Buffer.from(XLSX.write(validBook, { type: 'array', bookType: 'xlsx' })),
+      });
       await expect(adminPage.locator('#lead-import-preview')).toContainText('準備匯入 1 筆');
+      await expect(adminPage.locator('#lead-import-preview')).toContainText('LeadImport');
       await expectNoHorizontalOverflow(adminPage);
       const dialogBounds = await adminPage.locator('#lead-import-dialog').evaluate((dialog) => {
         const rect = dialog.getBoundingClientRect();
@@ -586,10 +633,30 @@ test.describe('致富投資 mobile and role journeys', () => {
       expect(dialogBounds.bottom).toBeLessThanOrEqual(dialogBounds.viewportHeight);
       await adminPage.getByTestId('lead-import-submit').click();
       await expect(adminPage.locator('#lead-import-dialog')).not.toBeVisible();
+      expect(importPostCount).toBe(1);
 
       const leadRow = adminPage.getByTestId('lead-row').filter({ visible: true }).filter({ hasText: leadName }).first();
       await expect(leadRow).toBeVisible();
       await expect(leadRow).toContainText(evidenceReference);
+
+      const downloadPromise = adminPage.waitForEvent('download', { timeout: 5_000 });
+      await adminPage.getByTestId('lead-export-xlsx').click();
+      const leadExport = await downloadPromise;
+      expect(leadExport.suggestedFilename()).toMatch(/^zhifu-leads-v1-\d{8}\.xlsx$/);
+      const exportPath = await leadExport.path();
+      const exportedBook = XLSX.read(await readFile(exportPath), { type: 'buffer' });
+      expect(exportedBook.SheetNames).toEqual(['Leads']);
+      const exportedRows = XLSX.utils.sheet_to_json(exportedBook.Sheets.Leads, { header: 1, raw: true });
+      expect(exportedRows[0]).toEqual([
+        'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
+        'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
+        'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
+        'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+      ]);
+      expect(exportedRows.some((row) => row.includes(leadName))).toBe(true);
+      expect(exportedRows.slice(1).every((row) => [15, 16, 17].every((index) => Number.isSafeInteger(row[index])))).toBe(true);
+      expect(exportedRows.slice(1).every((row) => [1, 3, 6, 10].every((index) => typeof row[index] === 'string'))).toBe(true);
+
       await leadRow.getByRole('button', { name: '管理潛客' }).click();
       await expect(adminPage.getByTestId('lead-source-evidence')).toHaveAttribute('readonly', '');
       await expect(adminPage.getByTestId('lead-owner')).toBeDisabled();

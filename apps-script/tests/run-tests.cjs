@@ -705,7 +705,7 @@ test('admin CSV import parses header aliases, previews invalid rows and rejects 
 test('admin CSV import exposes mobile-safe paste and file controls with the exact audited RPC envelope', () => {
   const { html } = loadAdminHtmlScript();
   assert.match(html, /<dialog id="leadImportDialog"/);
-  assert.match(html, /id="leadImportCsvFile"[^>]*accept="\.csv,text\/csv"/);
+  assert.match(html, /id="leadImportCsvFile"[^>]*accept="[^"]*\.csv[^"]*text\/csv[^"]*"/);
   assert.match(html, /id="leadImportCsvText"/);
   assert.match(html, /id="leadImportPreview"[^>]*aria-live="polite"/);
   assert.match(html, /onsubmit="submitLeadImport\(event\)"/);
@@ -715,6 +715,63 @@ test('admin CSV import exposes mobile-safe paste and file controls with the exac
   assert.match(html, /function submitLeadImport[\s\S]*if\(!canSubmitProspectImport\(leadImportState\)\)throw[\s\S]*rpc\('adminImportProspects'/);
   assert.match(html, /匯入[^`'"<]*\$\{[^}]*importedCount[^}]*\}[^`'"<]*筆[^`'"<]*略過[^`'"<]*\$\{[^}]*skippedCount[^}]*\}/);
   assert.match(html, /@media\(max-width:760px\)[\s\S]*lead-import/);
+});
+
+test('admin Excel controls use only a local SheetJS global and fail closed when it is unavailable', () => {
+  const { context, html } = loadAdminHtmlScript();
+  assert.match(html, /id="leadImportCsvFile"[^>]*\.xlsx/);
+  assert.match(html, /onclick="exportLeadsExcel\(\)"/);
+  assert.doesNotMatch(html, /<script[^>]+src=["'][^"']*(?:sheetjs|xlsx|unpkg|jsdelivr|cdnjs)/i);
+  assert.throws(() => context.requireLocalSheetJs(), /Excel.*(?:未安裝|未載入)/);
+
+  const matrix = [
+    ['姓名', 'email', 'phone', '來源管道', '來源'],
+    ['雙聯絡', 'DUAL@Example.com', '0912-345-678', 'OpenChat', '社群'],
+  ];
+  const sheet = {
+    A1: { t: 's', v: '姓名' }, B1: { t: 's', v: 'email' }, C1: { t: 's', v: 'phone' },
+    D1: { t: 's', v: '來源管道' }, E1: { t: 's', v: '來源' }, A2: { t: 's', v: '雙聯絡' },
+  };
+  let parsedWorkbook = { SheetNames: ['名單'], Sheets: { '名單': sheet } };
+  context.window.XLSX = {
+    read() { return parsedWorkbook; },
+    utils: {
+      sheet_to_json(value, options) {
+        assert.equal(value, sheet);
+        assert.deepEqual(JSON.parse(JSON.stringify(options)), { header: 1, defval: '', raw: false });
+        return matrix;
+      },
+      aoa_to_sheet() { return {}; },
+      book_new() { return {}; },
+      book_append_sheet() {},
+    },
+    writeFile() {},
+  };
+  const preview = context.parseProspectWorkbook(new ArrayBuffer(8));
+  assert.deepEqual(JSON.parse(JSON.stringify(preview.rows)), [{
+    displayName: '雙聯絡', contact: 'DUAL@Example.com', email: 'DUAL@Example.com', phone: '0912-345-678',
+    channel: 'OpenChat', source: '社群', status: 'new',
+  }]);
+  const oversized = context.parseProspectMatrix([
+    ['姓名', 'email', '來源'],
+    ...Array.from({ length: 501 }, (_, index) => [`Lead ${index}`, `lead-${index}@example.com`, '活動']),
+  ], 'Excel');
+  assert.equal(oversized.rows.length, 0);
+  assert.match(oversized.errors[0].message, /500/);
+  assert.equal(context.canSubmitProspectImport(oversized), false);
+
+  parsedWorkbook = { SheetNames: ['名單'], Sheets: { '名單': { ...sheet, A2: { t: 's', v: '危險', f: 'HYPERLINK("https://evil.example")' } } } };
+  const formulaPreview = context.parseProspectWorkbook(new ArrayBuffer(8));
+  assert.equal(formulaPreview.rows.length, 0);
+  assert.match(formulaPreview.errors[0].message, /公式/);
+  assert.equal(context.canSubmitProspectImport(formulaPreview), false);
+
+  parsedWorkbook = { SheetNames: ['名單一', '名單二'], Sheets: { '名單一': sheet, '名單二': { A1: { t: 's', v: '姓名' } } } };
+  const multipleSheets = context.parseProspectWorkbook(new ArrayBuffer(8));
+  assert.equal(multipleSheets.rows.length, 0);
+  assert.match(multipleSheets.errors[0].message, /一個非空白工作表/);
+  assert.match(html, /rpc\('adminExportProspectRows',\{reason:/);
+  assert.match(html, /rpc\('adminImportProspects',\{rows,sourceEvidence,privacyEvidence,reason\}\)/);
 });
 
 test('growth sheets and append-only migration expose the production contract', () => {
@@ -1054,6 +1111,60 @@ test('lead CSV v1 uses the canonical 18 columns and acquisition performance tota
   assert.match(row, /^"lead-export-v1","lead-1"/);
   assert.match(row, /,"1","500000","300000"$/);
   assert.doesNotMatch(header, /acquisitionOwnerId|linkedMemberId|investmentPreferencesJson/);
+});
+
+test('lead export projection is the authoritative exact 18-field typed row contract', () => {
+  const headers = [
+    'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
+    'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
+    'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
+    'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+  ];
+  const projection = sandbox.prospectExportProjection_([{
+    id: 'lead-typed', displayName: '=王小姐', phone: '0912345678', email: 'wang@example.com', channel: 'email',
+    sourceReference: 'SOURCE-1', privacyEvidenceReference: 'PRIVACY-1', privacyConsentedAt: '2026-08-18T00:00:00.000Z',
+    privacyNoticeVersion: 'privacy-v1', acquisitionOwnerId: 'ref-1', linkedMemberId: 'member-1', status: 'converted',
+    importedBy: 'admin-1', importedAt: '2026-08-18T00:00:00.000Z',
+  }], [{
+    acquisitionAttributionSnapshot: { leadId: 'lead-typed', ownerReferrerId: 'ref-1' },
+    requestedAmountTwd: 500000, allocatedAmountTwd: 300000,
+  }]);
+  assert.equal(projection.schemaVersion, 'lead-export-v1');
+  assert.deepEqual(JSON.parse(JSON.stringify(projection.headers)), headers);
+  assert.deepEqual(Object.keys(projection.rows[0]), headers);
+  assert.deepEqual(JSON.parse(JSON.stringify(projection.rows[0])), {
+    schemaVersion: 'lead-export-v1', id: 'lead-typed', displayName: '=王小姐', phone: '0912345678',
+    email: 'wang@example.com', channel: 'email', sourceReference: 'SOURCE-1', privacyEvidenceReference: 'PRIVACY-1',
+    privacyConsentedAt: '2026-08-18T00:00:00.000Z', privacyNoticeVersion: 'privacy-v1', ownerReferrerId: 'ref-1',
+    memberId: 'member-1', status: 'converted', importedBy: 'admin-1', importedAt: '2026-08-18T00:00:00.000Z',
+    subscriptionCount: 1, attributableRequestedAmountTwd: 500000, attributableAllocatedAmountTwd: 300000,
+  });
+  assert.equal(typeof projection.rows[0].subscriptionCount, 'number');
+  assert.equal(typeof projection.rows[0].attributableRequestedAmountTwd, 'number');
+  assert.equal(typeof projection.rows[0].attributableAllocatedAmountTwd, 'number');
+});
+
+test('adminExportProspectRows requires a reason, audits, and returns typed XLSX data metadata', () => {
+  const originals = { list: sandbox.storeList_, audit: sandbox.appendAudit_ };
+  const audits = [];
+  sandbox.storeList_ = (sheetName) => sheetName === 'Prospects' ? [{ id: 'lead-1', displayName: 'Lead', status: 'new' }] : [];
+  sandbox.appendAudit_ = (entry) => { audits.push(entry); };
+  try {
+    assert.throws(() => sandbox.dispatchOperation_('adminExportProspectRows', {
+      context: { role: 'admin', actorId: 'admin-1', requestId: 'xlsx-0' },
+    }), /reason/i);
+    const result = sandbox.dispatchOperation_('adminExportProspectRows', {
+      reason: '管理後台手動匯出 Excel',
+      context: { role: 'admin', actorId: 'admin-1', requestId: 'xlsx-1' },
+    });
+    assert.equal(result.schemaVersion, 'lead-export-v1');
+    assert.equal(result.headers.length, 18);
+    assert.equal(result.rows.length, 1);
+    assert.match(result.filename, /\.xlsx$/);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].action, 'admin.xlsx_data_exported');
+    assert.equal(audits[0].reason, '管理後台手動匯出 Excel');
+  } finally { sandbox.storeList_ = originals.list; sandbox.appendAudit_ = originals.audit; }
 });
 
 test('Apps CSV exports neutralize spreadsheet formulas after spaces or tabs', () => {

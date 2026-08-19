@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
 import {
   AMOUNT_FIELDS,
@@ -26,11 +27,19 @@ import {
   validateReferrer,
 } from './domain.js';
 import { createSessionManager, parseCookies, requireRole } from './auth.js';
+import {
+  LEAD_EXPORT_FIELDS,
+  LEAD_EXPORT_SCHEMA_VERSION,
+  createLeadXlsx,
+  leadExportRows,
+  leadXlsxFilename,
+} from './lead-xlsx.js';
 import { createLineProvider, statusMessage } from './line.js';
 import { createDemoDeckPdf } from './pdf.js';
 
 const ADMIN_ROLE = 'admin';
 const NOTIFICATION_MAX_ATTEMPTS = 4;
+const LEAD_IMPORT_MAX_BYTES = 64 * 1024;
 
 function error(c, status, code, message, details) {
   return c.json({ ok: false, error: { code, message, ...(details ? { details } : {}) } }, status);
@@ -148,38 +157,6 @@ function enrichedLead(lead, data) {
     subscriptionCount: subscriptions.length,
     attributableRequestedAmountTwd: subscriptions.reduce((sum, item) => sum + item.requestedAmountTwd, 0),
     attributableAllocatedAmountTwd: subscriptions.reduce((sum, item) => sum + item.allocatedAmountTwd, 0),
-  };
-}
-
-const LEAD_EXPORT_SCHEMA_VERSION = 'lead-export-v1';
-const LEAD_EXPORT_FIELDS = Object.freeze([
-  'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
-  'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
-  'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
-  'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
-]);
-
-function leadExportRow(lead, data) {
-  const enriched = enrichedLead(lead, data);
-  return {
-    schemaVersion: LEAD_EXPORT_SCHEMA_VERSION,
-    id: enriched.id,
-    displayName: enriched.displayName || '',
-    phone: enriched.phone || '',
-    email: enriched.email || '',
-    channel: enriched.channel || '',
-    sourceReference: enriched.sourceReference,
-    privacyEvidenceReference: enriched.privacyEvidence?.reference || '',
-    privacyConsentedAt: enriched.privacyEvidence?.consentedAt || '',
-    privacyNoticeVersion: enriched.privacyEvidence?.noticeVersion || '',
-    ownerReferrerId: enriched.ownerReferrerId,
-    memberId: enriched.memberId || '',
-    status: enriched.status,
-    importedBy: enriched.importedBy || '',
-    importedAt: enriched.importedAt || enriched.createdAt || '',
-    subscriptionCount: enriched.subscriptionCount,
-    attributableRequestedAmountTwd: enriched.attributableRequestedAmountTwd,
-    attributableAllocatedAmountTwd: enriched.attributableAllocatedAmountTwd,
   };
 }
 
@@ -1141,6 +1118,13 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     return c.json({ ok: true, lead, data: lead }, 201);
   });
 
+  const leadImportBodyLimit = bodyLimit({
+    maxSize: LEAD_IMPORT_MAX_BYTES,
+    onError: (c) => error(c, 413, 'payload_too_large', 'Lead import body cannot exceed 64 KiB'),
+  });
+  app.use('/api/admin/leads/import', leadImportBodyLimit);
+  app.use('/api/admin/leads/import-json', leadImportBodyLimit);
+
   const importLeadsHandler = async (c) => {
     const denied = gate(c, [ADMIN_ROLE]);
     if (denied) return denied;
@@ -1833,6 +1817,16 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     return c.json({ ok: true, audits, data: audits });
   });
 
+  app.get('/api/admin/export/leads.xlsx', (c) => {
+    const denied = gate(c, [ADMIN_ROLE]);
+    if (denied) return denied;
+    const bytes = createLeadXlsx(store.snapshot());
+    c.header('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    c.header('content-disposition', `attachment; filename="${leadXlsxFilename()}"`);
+    c.header('x-zhifu-export-schema', LEAD_EXPORT_SCHEMA_VERSION);
+    return c.body(bytes);
+  });
+
   app.get('/api/admin/export/:filename', (c) => {
     const denied = gate(c, [ADMIN_ROLE]);
     if (denied) return denied;
@@ -1854,7 +1848,7 @@ export function createApp({ store, env = process.env, staticRoot = './public', l
     const rows = resource === 'members'
       ? data.members.map((item) => enrichedMember(item, data))
       : resource === 'leads'
-        ? (data.leads || []).map((item) => leadExportRow(item, data))
+        ? leadExportRows(data)
       : resource === 'commissions'
         ? data.subscriptions.filter((item) => item.referralSnapshot).map((item) => ({
           ...item,

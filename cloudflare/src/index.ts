@@ -22,6 +22,15 @@ const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const JSON_BODY_LIMIT = 64 * 1024;
 const WEBHOOK_BODY_LIMIT = 2 * 1024 * 1024;
+const LEAD_EXPORT_HEADERS = [
+  'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
+  'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
+  'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
+  'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+] as const;
+const LEAD_EXPORT_NUMERIC_HEADERS = new Set<string>([
+  'subscriptionCount', 'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+]);
 
 type RouteMatch = {
   operation: string;
@@ -64,6 +73,7 @@ const fixedRoutes = new Map<string, RouteMatch>([
   ['GET /api/admin/newsletters/preview', { operation: 'adminDigestPreview', access: 'admin' }],
   ['POST /api/admin/newsletters/generate', { operation: 'adminDigestGenerate', access: 'admin' }],
   ['GET /api/admin/export/leads.csv', { operation: 'adminExportProspects', access: 'admin' }],
+  ['GET /api/admin/export/leads.xlsx-data', { operation: 'adminExportProspectRows', access: 'admin' }],
   ['GET /api/admin/exports/members.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'members' } }],
   ['GET /api/admin/exports/subscriptions.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'subscriptions' } }],
   ['GET /api/admin/exports/referrers.csv', { operation: 'adminExport', access: 'admin', params: { resource: 'referrers' } }],
@@ -225,6 +235,7 @@ async function requestPayload(request: Request, match: RouteMatch, session: Sess
     const contentType = request.headers.get('content-type') || '';
     const declaredLength = Number(request.headers.get('content-length') || '0');
     if (declaredLength > JSON_BODY_LIMIT) throw new Error('payload_too_large');
+    if (contentType && !contentType.toLowerCase().includes('application/json')) throw new Error('content_type');
     const raw = await request.text();
     if (new TextEncoder().encode(raw).byteLength > JSON_BODY_LIMIT) throw new Error('payload_too_large');
     if (raw) {
@@ -374,6 +385,9 @@ async function requestPayload(request: Request, match: RouteMatch, session: Sess
   if (match.operation === 'adminExportProspects') {
     return { ...base, reason: url.searchParams.get('reason') || undefined };
   }
+  if (match.operation === 'adminExportProspectRows') {
+    return { ...base, reason: 'Admin requested lead Excel export data' };
+  }
   return base;
 }
 
@@ -395,6 +409,15 @@ async function proxy(request: Request, env: GatewayEnv, match: RouteMatch, sessi
       : jsonError(400, 'invalid_json', 'Request body must be valid JSON');
   }
   const result = await callAppsScript(env, match.operation, payload);
+  if (result.ok && match.operation === 'adminExportProspectRows') {
+    if (!isProspectRowsExport(result.data)) {
+      return jsonError(502, 'apps_script_invalid_response', 'Operations backend returned invalid lead Excel export data');
+    }
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { ...JSON_HEADERS, 'cache-control': 'private, no-store' },
+    });
+  }
   if (result.ok && (match.operation === 'adminExport' || match.operation === 'adminExportProspects')) {
     const data = result.data;
     if (!isCsvExport(data)) {
@@ -438,7 +461,36 @@ function isCsvExport(value: unknown): value is { filename: string; csv: string }
   return typeof candidate.filename === 'string' && typeof candidate.csv === 'string';
 }
 
+function isProspectRowsExport(value: unknown): value is {
+  filename: string;
+  schemaVersion: 'lead-export-v1';
+  headers: string[];
+  rows: Array<Record<string, string | number>>;
+} {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  const headers = candidate.headers;
+  const rows = candidate.rows;
+  if (typeof candidate.filename !== 'string' || !candidate.filename.endsWith('.xlsx') ||
+      candidate.schemaVersion !== 'lead-export-v1' || !Array.isArray(headers) ||
+      !Array.isArray(rows) || headers.length !== LEAD_EXPORT_HEADERS.length ||
+      !LEAD_EXPORT_HEADERS.every((header, index) => headers[index] === header)) return false;
+  return rows.every((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+    const record = row as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length !== LEAD_EXPORT_HEADERS.length || !LEAD_EXPORT_HEADERS.every((header) => keys.includes(header))) return false;
+    return LEAD_EXPORT_HEADERS.every((header) => {
+      const cell = record[header];
+      return LEAD_EXPORT_NUMERIC_HEADERS.has(header)
+        ? typeof cell === 'number' && Number.isFinite(cell) && cell >= 0
+        : typeof cell === 'string';
+    });
+  });
+}
+
 async function createDeckToken(request: Request, env: GatewayEnv, projectId: string, session: Session | null): Promise<Response> {
+  if (!env.DECKS) return jsonError(503, 'deck_storage_not_configured', 'Protected document storage is not configured');
   if (!session) return jsonError(401, 'authentication_required', 'Please sign in with LINE');
   if (!session.memberId?.trim()) {
     return jsonError(403, 'identity_not_linked', 'Member identity is not linked');
@@ -506,6 +558,7 @@ async function downloadDeck(
   rawToken: string,
   session: Session | null,
 ): Promise<Response> {
+  if (!env.DECKS) return jsonError(503, 'deck_storage_not_configured', 'Protected document storage is not configured');
   if (!session) return jsonError(401, 'authentication_required', 'Please sign in with LINE');
   const now = Math.floor(Date.now() / 1000);
   const row = await env.DB.prepare(

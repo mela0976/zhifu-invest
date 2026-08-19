@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
+import * as XLSX from 'xlsx';
 import { createApp } from '../src/app.js';
 import { createSeedData } from '../src/seeds.js';
 import { MemoryStore } from '../src/store.js';
@@ -558,6 +559,60 @@ test('dashboard and CSV exports include auditable referral and commission data',
   assert.equal(afterIntegrityCheck.attributableRequestedAmountTwd, beforeIntegrityCheck.attributableRequestedAmountTwd);
 });
 
+test('admin exports an exact typed lead-export-v1 XLSX workbook without formulas', async () => {
+  const { app, store } = await fixture();
+  const admin = await login(app, 'admin');
+  const member = await login(app, 'member', 'member-001');
+  assert.equal((await app.request('/api/admin/export/leads.xlsx')).status, 401);
+  assert.equal((await app.request('/api/admin/export/leads.xlsx', { headers: { cookie: member } })).status, 403);
+  await store.mutate((draft) => {
+    draft.leads[0].displayName = ' =HYPERLINK("https://example.invalid")';
+    draft.leads[0].sourceReference = '\t@SUM(1,1)';
+  });
+
+  const response = await app.request('/api/admin/export/leads.xlsx', { headers: { cookie: admin } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('x-zhifu-export-schema'), 'lead-export-v1');
+  assert.match(
+    response.headers.get('content-disposition') || '',
+    /^attachment; filename="zhifu-leads-v1-\d{8}-\d{6}\.xlsx"$/,
+  );
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(bytes.subarray(0, 2).toString(), 'PK');
+  const workbook = XLSX.read(bytes, { type: 'buffer', cellDates: true });
+  assert.deepEqual(workbook.SheetNames, ['Leads']);
+  const worksheet = workbook.Sheets.Leads;
+  const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: true, defval: '' });
+  const expectedHeaders = [
+    'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
+    'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
+    'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
+    'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+  ];
+  assert.deepEqual(rows[0], expectedHeaders);
+  assert.ok(rows.length > 1);
+  const first = rows[1];
+  assert.equal(first[0], 'lead-export-v1');
+  assert.equal(first[2], ' =HYPERLINK("https://example.invalid")');
+  assert.equal(first[6], '\t@SUM(1,1)');
+  for (const index of [1, 3, 6, 7, 10, 11]) assert.equal(typeof first[index], 'string');
+  for (const index of [15, 16, 17]) {
+    assert.equal(typeof first[index], 'number');
+    assert.equal(Number.isSafeInteger(first[index]), true);
+  }
+  const range = XLSX.utils.decode_range(worksheet['!ref']);
+  for (let row = range.s.r; row <= range.e.r; row += 1) {
+    for (let column = range.s.c; column <= range.e.c; column += 1) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: column })];
+      if (cell) assert.equal(cell.f, undefined, `formula found at row ${row + 1}, column ${column + 1}`);
+    }
+  }
+});
+
 test('lead CSV neutralizes spreadsheet formulas after leading spaces or tabs', async () => {
   const { app, store } = await fixture();
   const admin = await login(app, 'admin');
@@ -774,6 +829,32 @@ test('a disabled acquisition owner can still be linked while future commission s
   assert.equal(subscription.acquisitionAttributionSnapshot.ownerReferrerId, 'referrer-03');
   assert.equal(subscription.referralSnapshot, null);
   assert.equal(subscription.commissionState, 'not_applicable');
+});
+
+test('lead JSON import rejects more than 500 rows and bodies larger than 64 KiB without mutation', async () => {
+  const { app, store } = await fixture();
+  const admin = await login(app, 'admin');
+  const initialLeadCount = store.data.leads.length;
+  const initialAuditCount = store.data.audits.length;
+
+  const tooManyRows = await app.request('/api/admin/leads/import', {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ rows: Array.from({ length: 501 }, () => ({})), reason: 'Must enforce row limit' }),
+  });
+  assert.equal(tooManyRows.status, 400);
+  assert.equal((await tooManyRows.json()).error.code, 'invalid_lead_import');
+
+  const oversized = await app.request('/api/admin/leads/import-json', {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rows: [{ owner: 'REFERRER', source: 'BODY-LIMIT-001', email: 'body-limit@example.invalid' }],
+      sourceEvidence: 'PRIVACY-BODY-LIMIT', reason: 'Must enforce byte limit', padding: 'x'.repeat(64 * 1024),
+    }),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal((await oversized.json()).error.code, 'payload_too_large');
+  assert.equal(store.data.leads.length, initialLeadCount);
+  assert.equal(store.data.audits.length, initialAuditCount);
 });
 
 test('content CRUD publishes only risk-disclosed items allowed for each audience and archives history', async () => {

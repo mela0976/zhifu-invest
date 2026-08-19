@@ -897,35 +897,46 @@ var ZF_LEAD_EXPORT_HEADERS = Object.freeze([
   'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd'
 ]);
 
-function prospectRecordsToCsv_(records, subscriptions) {
-  var headers = ZF_LEAD_EXPORT_HEADERS;
-  var lines = [headers.map(csvEscape_).join(',')];
-  records.forEach(function (record) {
+function prospectExportProjection_(records, subscriptions) {
+  var rows = (records || []).map(function (record) {
     var attributed = (subscriptions || []).filter(function (subscription) {
       var snapshot = subscription.acquisitionAttributionSnapshot || {};
       return (snapshot.leadId || snapshot.prospectId) === record.id &&
         (snapshot.ownerReferrerId || snapshot.acquisitionOwnerId) === record.acquisitionOwnerId;
     });
-    var exportRow = {
+    return {
       schemaVersion: ZF_LEAD_EXPORT_SCHEMA_VERSION,
-      id: record.id,
-      displayName: record.displayName || '',
-      phone: record.phone || '',
-      email: record.email || '',
-      channel: record.channel || '',
-      sourceReference: record.sourceReference || '',
-      privacyEvidenceReference: record.privacyEvidenceReference || '',
-      privacyConsentedAt: record.privacyConsentedAt || '',
-      privacyNoticeVersion: record.privacyNoticeVersion || '',
-      ownerReferrerId: record.acquisitionOwnerId || '',
-      memberId: record.linkedMemberId || '',
-      status: record.status || '',
-      importedBy: record.importedBy || '',
-      importedAt: record.importedAt || record.createdAt || '',
+      id: String(record.id || ''),
+      displayName: String(record.displayName || ''),
+      phone: String(record.phone || ''),
+      email: String(record.email || ''),
+      channel: String(record.channel || ''),
+      sourceReference: String(record.sourceReference || ''),
+      privacyEvidenceReference: String(record.privacyEvidenceReference || ''),
+      privacyConsentedAt: String(record.privacyConsentedAt || ''),
+      privacyNoticeVersion: String(record.privacyNoticeVersion || ''),
+      ownerReferrerId: String(record.acquisitionOwnerId || ''),
+      memberId: String(record.linkedMemberId || ''),
+      status: String(record.status || ''),
+      importedBy: String(record.importedBy || ''),
+      importedAt: String(record.importedAt || record.createdAt || ''),
       subscriptionCount: attributed.length,
       attributableRequestedAmountTwd: attributed.reduce(function (total, item) { return total + Number(item.requestedAmountTwd || 0); }, 0),
       attributableAllocatedAmountTwd: attributed.reduce(function (total, item) { return total + Number(item.allocatedAmountTwd || 0); }, 0)
     };
+  });
+  return {
+    schemaVersion: ZF_LEAD_EXPORT_SCHEMA_VERSION,
+    headers: ZF_LEAD_EXPORT_HEADERS.slice(),
+    rows: rows
+  };
+}
+
+function prospectRecordsToCsv_(records, subscriptions) {
+  var projection = prospectExportProjection_(records, subscriptions);
+  var headers = projection.headers;
+  var lines = [headers.map(csvEscape_).join(',')];
+  projection.rows.forEach(function (exportRow) {
     lines.push(headers.map(function (header) { return csvEscape_(exportRow[header]); }).join(','));
   });
   return '\uFEFF' + lines.join('\r\n');
@@ -939,5 +950,25 @@ function operationAdminExportProspects_(payload, context) {
   return {
     filename: 'zhifu-leads-' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '.csv',
     mimeType: 'text/csv;charset=utf-8', csv: prospectRecordsToCsv_(records, subscriptions)
+  };
+}
+
+function operationAdminExportProspectRows_(payload, context) {
+  assertRole_(context, ['admin']);
+  var reason = assertRequiredString_(payload.reason, 'reason', 1000);
+  var records = storeList_('Prospects');
+  var subscriptions = storeList_('Subscriptions');
+  var projection = prospectExportProjection_(records, subscriptions);
+  appendAudit_({
+    entityType: 'export', entityId: 'leads', action: 'admin.xlsx_data_exported',
+    actor: actorFromContext_(context), before: null,
+    after: { schemaVersion: projection.schemaVersion, rows: projection.rows.length },
+    reason: reason, requestId: context.requestId
+  });
+  return {
+    filename: 'zhifu-leads-' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '.xlsx',
+    schemaVersion: projection.schemaVersion,
+    headers: projection.headers,
+    rows: projection.rows
   };
 }

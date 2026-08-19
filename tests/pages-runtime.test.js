@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -268,7 +269,18 @@ test('Pages build injects runtime config before every module and rewrites API li
   assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/commissions\.csv"/);
   assert.match(admin, /href="https:\/\/api\.example\.com\/edge\/api\/admin\/export\/leads\.csv"/);
   assert.match(admin, /data-testid="lead-dashboard"/);
+  assert.match(admin, /accept="[^"]*\.xlsx[^"]*\.csv[^"]*"/);
+  assert.match(admin, /data-testid="lead-export-xlsx"/);
   assert.doesNotMatch(admin, /href="\/zhifu-invest\/api\//);
+
+  const sheetJs = await readFile(join(directory, 'vendor', 'sheetjs', 'xlsx.mini.min.js'));
+  assert.equal(sheetJs.byteLength, 279_523);
+  assert.equal(createHash('sha256').update(sheetJs).digest('hex'), '0cb353f830d7288385492c83d277b058ddeac664ca51cf1393aa1fd3e2b70939');
+  assert.match(await readFile(join(directory, 'vendor', 'sheetjs', 'LICENSE'), 'utf8'), /Apache License[\s\S]*Version 2\.0/);
+  assert.match(await readFile(join(directory, 'vendor', 'sheetjs', 'SHA256SUMS'), 'utf8'), /0cb353f830d7288385492c83d277b058ddeac664ca51cf1393aa1fd3e2b70939\s+xlsx\.mini\.min\.js/);
+  const workbookWorker = await readFile(join(directory, 'js', 'xlsx-import-worker.js'), 'utf8');
+  assert.match(workbookWorker, /importScripts\(['"]\.\.\/vendor\/sheetjs\/xlsx\.mini\.min\.js['"]\)/);
+  assert.doesNotMatch(workbookWorker, /https?:\/\//);
 
   const index = await readFile(join(directory, 'index.html'), 'utf8');
   assert.match(index, /power by 奇華智能投資顧問股份有限公司/);

@@ -108,6 +108,43 @@ export function filterPublicSafeContent(items = [], now = Date.now()) {
   });
 }
 
+export const LEAD_EXPORT_HEADERS = Object.freeze([
+  'schemaVersion', 'id', 'displayName', 'phone', 'email', 'channel', 'sourceReference',
+  'privacyEvidenceReference', 'privacyConsentedAt', 'privacyNoticeVersion', 'ownerReferrerId',
+  'memberId', 'status', 'importedBy', 'importedAt', 'subscriptionCount',
+  'attributableRequestedAmountTwd', 'attributableAllocatedAmountTwd',
+]);
+
+function csvExportCell(value) {
+  const text = value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const safe = /^[\t ]*[=+@-]/.test(text) ? `'${text}` : text;
+  return `"${safe.replaceAll('"', '""')}"`;
+}
+
+export function demoLeadExportCsv(items = demoLeads) {
+  const rows = items.map((item) => ({
+    schemaVersion: 'DEMO-lead-export-v1',
+    id: `DEMO-${item.id}`,
+    displayName: item.displayName,
+    phone: item.phone || '',
+    email: item.email || '',
+    channel: item.channel,
+    sourceReference: item.sourceReference,
+    privacyEvidenceReference: item.privacyEvidence?.reference || '',
+    privacyConsentedAt: item.privacyEvidence?.consentedAt || '',
+    privacyNoticeVersion: 'DEMO',
+    ownerReferrerId: item.ownerReferrerId,
+    memberId: item.memberId || '',
+    status: item.status,
+    importedBy: 'DEMO ONLY',
+    importedAt: item.createdAt || '',
+    subscriptionCount: 0,
+    attributableRequestedAmountTwd: 0,
+    attributableAllocatedAmountTwd: 0,
+  }));
+  return `\uFEFF${[LEAD_EXPORT_HEADERS, ...rows.map((row) => LEAD_EXPORT_HEADERS.map((field) => row[field]))].map((row) => row.map(csvExportCell).join(',')).join('\r\n')}`;
+}
+
 function unwrapApiData(value) {
   return value?.data ?? value ?? null;
 }
@@ -468,6 +505,10 @@ export const api = {
   createLead: (input) => request('/api/admin/leads', { method: 'POST', body: input }),
 
   importLeads: (input) => request('/api/admin/leads/import', { method: 'POST', body: input }),
+
+  adminLeadExportCsv: () => withDemoFallback('lead CSV export', () => demoLeadExportCsv())(
+    () => request('/api/admin/export/leads.csv'),
+  ),
 
   updateLead: (id, input) => request(`/api/admin/leads/${encodeURIComponent(id)}`, {
     method: 'PATCH', body: input,

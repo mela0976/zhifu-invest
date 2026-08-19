@@ -13,6 +13,7 @@ const APP_ERROR_STATUSES: Readonly<Record<string, number>> = {
   daily_digest_consent_required: 409,
   delivery_consent_required: 409,
   delivery_identity_missing: 409,
+  deck_storage_not_configured: 503,
   corrupt_data: 502,
   commission_actor_required: 409,
   commission_amount_locked: 409,

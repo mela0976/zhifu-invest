@@ -637,6 +637,11 @@ html[data-demo='true'] .demo-strip { display: block; }
 .import-preview li { padding: 7px 0; border-top: 1px solid var(--line); font-size: 11px; overflow-wrap: anywhere; }
 .import-preview li strong, .import-preview li span { display: block; }
 .import-preview li span { color: var(--muted); }
+.import-errors { margin-top: 12px; padding: 12px; border: 1px solid #d7a29d; color: var(--danger); background: var(--danger-bg); overflow-wrap: anywhere; }
+.import-errors:first-child { margin-top: 0; }
+.import-errors ul { margin: 8px 0 0; padding-left: 20px; }
+.import-errors li { border-color: rgba(120,45,39,.2); font-size: 12px; }
+.import-errors p { margin: 8px 0 0; font-size: 11px; }
 .content-admin-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, .6fr); gap: 18px; align-items: start; }
 .content-register-grid { padding: 14px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .content-register-card { min-width: 0; padding: 16px; border: 1px solid var(--line); background: #fbfaf5; }
